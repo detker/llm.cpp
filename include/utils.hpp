@@ -1,0 +1,6 @@
+#ifndef LLM_CPP_UTILS_HPP
+#define LLM_CPP_UTILS_HPP
+
+
+
+#endif //LLM_CPP_UTILS_HPP
