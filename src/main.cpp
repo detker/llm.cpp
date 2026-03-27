@@ -2,21 +2,16 @@
 #include <vector>
 
 #include "Config.hpp"
+#include "utils.hpp"
+#include "TransformerWeights.hpp"
+#include "RunState.hpp"
 
 int main(int argc, char **argv) {
-    Config config{
-        .dim = 512,
-        .n_layers = 12,
-        .head_dim = 64,
-        .hidden_dim = 2048,
-        .n_heads = 8,
-        .n_kv_heads = 8,
-        .window_size = 512,
-        .context_len = 512,
-        .vocab_size = 30522
-    };
+    DataUtils dataUtils("../model.bin");
+    Config config = dataUtils.getConfig();
+    TransformerWeights weights = dataUtils.mapModelWeights();
+    RunState runState = RunState(config);
 
-    std::cout << config.context_len << std::endl;
 
     return 0;
 }

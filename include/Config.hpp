@@ -1,16 +1,41 @@
 #ifndef LLM_CPP_CONFIG_HPP
 #define LLM_CPP_CONFIG_HPP
 
+#include <string>
+
+enum ActType {
+    GELU,
+    SILU,
+    RELU
+};
+
+enum DType {
+    FP32,
+    FP16,
+    BF16
+};
+
 struct Config {
+    ActType act_type;
+    std::string arch;
+    DType dtype;
+
     int dim;
     int n_layers;
     int head_dim;
     int hidden_dim;
     int n_heads;
     int n_kv_heads;
-    int window_size;
-    int context_len;
+    int max_seq_len;
     int vocab_size;
+
+    float norm_eps;
+    float rope_theta;
+    std::string norm_type;
+    int rotary_dim;
+
+    int bos_token_id;
+    int eos_token_id;
 };
 
 #endif //LLM_CPP_CONFIG_HPP
