@@ -38,6 +38,8 @@ Config& DataUtils::getConfig() {
     config.n_kv_heads = std::stoi(metadata["n_kv_heads"].get<std::string>());
     config.max_seq_len = std::stoi(metadata["max_seq_len"].get<std::string>());
     config.vocab_size = std::stoi(metadata["vocab_size"].get<std::string>());
+    config.norm_eps = std::stof(metadata["norm_eps"].get<std::string>());
+    config.rope_theta = std::stof(metadata["rope_theta"].get<std::string>());
     config.bos_token_id = std::stoi(metadata["bos_token_id"].get<std::string>());
     config.eos_token_id = std::stoi(metadata["eos_token_id"].get<std::string>());
 
@@ -84,8 +86,15 @@ TransformerWeights& DataUtils::mapModelWeights() {
     return weights;
 }
 
+Tokenizer& DataUtils::getTokenizer() {
+    char *weights_start = data + sizeof(uint64_t) + header_size;
+    auto tokens = weights_start + static_cast<size_t>(header["tokenizer.tokens"]["data_offsets"][0]);
+    tokenizer = Tokenizer(tokens, config.vocab_size, config.bos_token_id, config.eos_token_id);
+    return tokenizer;
+}
+
 DataUtils::~DataUtils() {
-    delete weights.layer_weights;
+    delete[] weights.layer_weights;
     if (munmap(data, file_size)) {
         ERR("munmap error");
     }

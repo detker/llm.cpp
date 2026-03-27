@@ -22,16 +22,16 @@ RunState::RunState(Config &config) {
 }
 
 RunState::~RunState() {
-    delete x;
-    delete xb;
-    delete xb2;
-    delete hb;
-    delete hb2;
-    delete q;
-    delete k;
-    delete v;
-    delete att;
-    delete logits;
-    delete key_cache;
-    delete value_cache;
+    delete[] x;
+    delete[] xb;
+    delete[] xb2;
+    delete[] hb;
+    delete[] hb2;
+    delete[] q;
+    delete[] k;
+    delete[] v;
+    delete[] att;
+    delete[] logits;
+    delete[] key_cache;
+    delete[] value_cache;
 }

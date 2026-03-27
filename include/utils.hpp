@@ -12,6 +12,7 @@
 #include "Config.hpp"
 #include "TransformerWeights.hpp"
 #include "errorUtils.hpp"
+#include "Tokenizer.hpp"
 
 using json = nlohmann::json;
 
@@ -21,9 +22,11 @@ public:
     ~DataUtils();
     Config& getConfig();
     TransformerWeights& mapModelWeights();
+    Tokenizer& getTokenizer();
 private:
     Config config;
     TransformerWeights weights;
+    Tokenizer tokenizer;
     char *data;
     size_t file_size;
     int fd;
