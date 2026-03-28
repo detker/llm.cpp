@@ -6,6 +6,8 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CUDA_STANDARD 17)
 set(CMAKE_CUDA_STANDARD_REQUIRED ON)
 
+find_package(OpenMP REQUIRED)
+
 set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -O3 --use_fast_math")
 set(CMAKE_CUDA_FLAGS_DEBUG "-g -G")
 set(CMAKE_CUDA_FLAGS_RELEASE "-O3 --use_fast_math")
@@ -44,7 +46,12 @@ set_target_properties(llm_cpp PROPERTIES
         CUDA_SEPARABLE_COMPILATION ON
 )
 
-target_link_libraries(llm_cpp PRIVATE CUDA::cudart)
+target_link_libraries(llm_cpp PRIVATE CUDA::cudart OpenMP::OpenMP_CXX)
+
+set_target_properties(llm_cpp PROPERTIES
+        VS_DEBUGGER_ENVIRONMENT "OMP_NUM_THREADS=24"
+)
+set(ENV{OMP_NUM_THREADS} 24)
 
 target_include_directories(llm_cpp PRIVATE
         include
