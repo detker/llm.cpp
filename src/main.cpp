@@ -2,6 +2,7 @@
 #include <vector>
 #include <csignal>
 #include <atomic>
+#include <sys/stat.h>
 
 #include "Config.hpp"
 #include "utils.hpp"
@@ -24,7 +25,6 @@ void signalHandler(int signum) {
 }
 
 int main(int argc, char **argv) {
-    // Register signal handler for Ctrl+C
     std::signal(SIGINT, signalHandler);
     std::signal(SIGTERM, signalHandler);
 
@@ -75,11 +75,32 @@ int main(int argc, char **argv) {
 
     timerManager.Stop();
     float elapsed_seconds = timerManager.ElapsedSeconds();
-    float tokens_per_sec = (elapsed_seconds > 0) ? tokens_generated / elapsed_seconds : 0.0f;
 
-    std::cout << "\nGeneration time: " << elapsed_seconds << " seconds" << std::endl;
+    if (tokens_generated == 0) {
+        std::cout << "\nNo tokens generated." << std::endl;
+        return 0;
+    }
+
+    float tokens_per_sec = tokens_generated / elapsed_seconds;
+    float latency_s_per_tok = elapsed_seconds / tokens_generated;
+
+    struct stat model_stat;
+    if (stat(args.model_path.c_str(), &model_stat)) {
+        ERR("stat error");
+    }
+
+    long long file_size = model_stat.st_size;
+
+    long long weights_size_bytes = file_size - sizeof(uint64_t) - dataUtils.getHeaderSize() - dataUtils.getTokenizerSize();
+
+    double total_bytes_read = (double)weights_size_bytes * tokens_generated;
+    double bandwidth_gb_per_sec = (total_bytes_read / (1024.0 * 1024.0 * 1024.0)) / elapsed_seconds;
+
+    std::cout << "Generation time: " << elapsed_seconds << " seconds" << std::endl;
     std::cout << "Tokens generated: " << tokens_generated << std::endl;
     std::cout << "Tokens per second: " << tokens_per_sec << " tok/s" << std::endl;
+    std::cout << "Latency: " << latency_s_per_tok << " s/tok" << std::endl;
+    std::cout << "Bandwidth: " << bandwidth_gb_per_sec << " GB/s" << std::endl;
 
     return 0;
 }

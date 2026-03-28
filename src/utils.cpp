@@ -90,6 +90,14 @@ Tokenizer& DataUtils::getTokenizer() {
     return tokenizer;
 }
 
+uint64_t DataUtils::getTokenizerSize() const {
+    auto tokenizer_offset = static_cast<size_t>(header["tokenizer.tokens"]["data_offsets"][0]);
+    uint64_t tokenizer_absolute_pos = sizeof(uint64_t) + header_size + tokenizer_offset;
+
+    uint64_t tokenizer_size = file_size - tokenizer_absolute_pos;
+    return tokenizer_size;
+}
+
 DataUtils::~DataUtils() {
     delete[] weights.layer_weights;
     if (munmap(data, file_size)) {

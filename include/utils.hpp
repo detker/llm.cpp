@@ -23,6 +23,8 @@ public:
     Config& getConfig();
     TransformerWeights& mapModelWeights();
     Tokenizer& getTokenizer();
+    uint64_t getHeaderSize() const { return header_size; }
+    uint64_t getTokenizerSize() const;
 private:
     Config config;
     TransformerWeights weights;
