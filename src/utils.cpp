@@ -24,10 +24,6 @@ Config& DataUtils::getConfig() {
     std::string json_str(data + sizeof(uint64_t), header_size);
     header = json::parse(json_str);
 
-    for (auto &kv : header.items()) {
-        std::cout << kv.key() << ": " << kv.value() << std::endl;
-    }
-
     // Config config;
     auto metadata = header["__metadata__"];
     config.dtype = metadata["dtype"].get<std::string>() == "fp16" ? DType::FP16 : DType::FP32;

@@ -23,7 +23,7 @@
 } while(0)
 
 inline void usage(const char* prog_name) {
-    fprintf(stderr, "Usage: %s <data_path> <dim> <k> <niter>\n", prog_name);
+    fprintf(stderr, "Usage: %s <model_path> <prompt> <temperature>\n", prog_name);
     exit(EXIT_FAILURE);
 }
 
