@@ -7,16 +7,17 @@
 #include "Config.hpp"
 #include "RunState.hpp"
 #include "TransformerWeights.hpp"
+#include "utils.hpp"
 
 class Inference {
 public:
     Inference(Config *config, RunState *runState, TransformerWeights *weights);
     ~Inference() = default;
-
-    void matmul(float *xout, float *x, const float *w, int n, int d);
-    void RMSnorm(float *xout, float *x, const float *w, int d, float eps);
-    void softmax(float *x, int size);
-    void silu(float *x, int size);
+    //
+    // void matmul(float *xout, float *x, const float *w, int n, int d);
+    // void RMSnorm(float *xout, float *x, const float *w, int d, float eps);
+    // void softmax(float *x, int size);
+    // void silu(float *x, int size);
 
     void forward(int token, int pos);
 private:

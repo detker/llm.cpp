@@ -10,7 +10,8 @@
 #include "Tokenizer.hpp"
 
 int main(int argc, char **argv) {
-    DataUtils dataUtils("../model.bin");
+    MiscUtils::ParseResult args = MiscUtils::parseArgs(argc, argv);
+    DataUtils dataUtils(args.model_path.c_str());
     Config config = dataUtils.getConfig();
     TransformerWeights weights = dataUtils.mapModelWeights();
     Tokenizer tokenizer = dataUtils.getTokenizer();
@@ -18,20 +19,17 @@ int main(int argc, char **argv) {
     Inference inference(&config, &runState, &weights);
     Sampler sampler{};
 
+    std::cout << "Mistral-7B-v0.2 | Input String: " << args.txt << " | Temperature: " << args.temperature << std::endl;
+    printf("Model Answer: ");
+    fflush(stdout);
 
-    std::string txt = "Hello world";
-    std::vector<int> input_tokens_ids = tokenizer.encode(txt, config.max_seq_len);
-
-    std::cout << "Input: ";
+    std::vector<int> input_tokens_ids = tokenizer.encode(args.txt, config.max_seq_len);
     for (uint i = 0; i < input_tokens_ids.size(); i++) {
-        printf("%s ", tokenizer.decode(input_tokens_ids[i]).c_str());
-        fflush(stdout);
         inference.forward(input_tokens_ids[i], i);
     }
 
-    std::cout << std::endl << "Model: ";
     for (uint i = input_tokens_ids.size(); i < config.max_seq_len; ++i) {
-        auto next_token = sampler.sample_argmax(runState.logits, config.vocab_size);
+        auto next_token = sampler.sample_temperature(runState.logits, config.vocab_size, args.temperature);
         if (next_token == config.eos_token_id) {
             std::cout << "End of sequence generated." << std::endl;
             break;

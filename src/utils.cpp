@@ -1,5 +1,6 @@
 #include "utils.hpp"
 
+
 DataUtils::DataUtils(const char *model_path) {
     if ((fd = open(model_path, O_RDONLY)) == -1) {
         ERR("open error");
@@ -101,4 +102,67 @@ DataUtils::~DataUtils() {
     if (close(fd)) {
         ERR("close error");
     }
+}
+
+
+// w (d, n) @ x (n,) -> xout (d,)
+void MathUtils::matmul(float *xout, float *x, const float *w, int n, int d) {
+    for (int i = 0; i < d; ++i) {
+        xout[i] = 0.0f;
+        for (int j = 0; j < n; ++j) {
+            xout[i] += w[i * n + j] * x[j];
+        }
+    }
+}
+
+// x_i: (x_i/sqrt(1/N * sum(x_j^2)+eps)) * w_i
+void MathUtils::RMSnorm(float *xout, float *x, const float *w, int d, float eps) {
+    float mean_square = 0.0f;
+    for (int i = 0; i < d; ++i) {
+        mean_square += x[i] * x[i];
+    }
+    mean_square /= d;
+
+    float norm_factor = 1.0f / std::sqrt(mean_square + eps);
+    for (int i = 0; i < d; ++i) {
+        xout[i] = (x[i] * norm_factor) * w[i];
+    }
+}
+
+void MathUtils::softmax(float *x, int size) {
+    float max_val = x[0];
+    for (int i = 1; i < size; ++i) {
+        if (x[i] > max_val) {
+            max_val = x[i];
+        }
+    }
+
+    float denom = 0.0f;
+    for (int i = 0; i < size; ++i) {
+        x[i] = std::exp(x[i] - max_val);
+        denom += x[i];
+    }
+
+    for (int i = 0; i < size; ++i) {
+        x[i] /= denom;
+    }
+}
+
+void MathUtils::silu(float *x, int size) {
+    for (int i = 0; i < size; ++i) {
+        x[i] = x[i] / (1.0f + std::exp(-x[i]));
+    }
+}
+
+
+MiscUtils::ParseResult MiscUtils::parseArgs(int argc, char **argv) {
+    if (argc < 4) {
+        usage(argv[0]);
+    }
+
+    std::string model_path = argv[1];
+    std::string txt = argv[2];
+    float temp = atof(argv[3]);
+
+    return MiscUtils::ParseResult{.model_path = model_path, .txt = txt, .temperature = temp};
 }

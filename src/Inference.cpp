@@ -1,53 +1,5 @@
 #include "Inference.hpp"
 
-// w (d, n) @ x (n,) -> xout (d,)
-void Inference::matmul(float *xout, float *x, const float *w, int n, int d) {
-    for (int i = 0; i < d; ++i) {
-        xout[i] = 0.0f;
-        for (int j = 0; j < n; ++j) {
-            xout[i] += w[i * n + j] * x[j];
-        }
-    }
-}
-
-// x_i: (x_i/sqrt(1/N * sum(x_j^2)+eps)) * w_i
-void Inference::RMSnorm(float *xout, float *x, const float *w, int d, float eps) {
-    float mean_square = 0.0f;
-    for (int i = 0; i < d; ++i) {
-        mean_square += x[i] * x[i];
-    }
-    mean_square /= d;
-
-    float norm_factor = 1.0f / std::sqrt(mean_square + eps);
-    for (int i = 0; i < d; ++i) {
-        xout[i] = (x[i] * norm_factor) * w[i];
-    }
-}
-
-void Inference::softmax(float *x, int size) {
-    float max_val = x[0];
-    for (int i = 1; i < size; ++i) {
-        if (x[i] > max_val) {
-            max_val = x[i];
-        }
-    }
-
-    float denom = 0.0f;
-    for (int i = 0; i < size; ++i) {
-        x[i] = std::exp(x[i] - max_val);
-        denom += x[i];
-    }
-
-    for (int i = 0; i < size; ++i) {
-        x[i] /= denom;
-    }
-}
-
-void Inference::silu(float *x, int size) {
-    for (int i = 0; i < size; ++i) {
-        x[i] = x[i] / (1.0f + std::exp(-x[i]));
-    }
-}
 
 Inference::Inference(Config *config, RunState *runState, TransformerWeights *weights): config(config), runState(runState), weights(weights) {}
 
@@ -88,14 +40,14 @@ void Inference::layer_forward(int layer_id, int pos) {
     auto &layer_weights = weights->layer_weights[layer_id];
 
     // 1. attn norm
-    RMSnorm(runState->xb, runState->x, layer_weights.norm_att_weight, config->dim, config->norm_eps);
+    MathUtils::RMSnorm(runState->xb, runState->x, layer_weights.norm_att_weight, config->dim, config->norm_eps);
 
     int kv_dim = (config->dim / config->n_heads) * config->n_kv_heads;
 
     // 2. qkv projection
-    matmul(runState->q, runState->xb, layer_weights.q_proj_weight, config->dim, config->dim);
-    matmul(runState->k, runState->xb, layer_weights.k_proj_weight, config->dim, kv_dim);
-    matmul(runState->v, runState->xb, layer_weights.v_proj_weight, config->dim, kv_dim);
+    MathUtils::matmul(runState->q, runState->xb, layer_weights.q_proj_weight, config->dim, config->dim);
+    MathUtils::matmul(runState->k, runState->xb, layer_weights.k_proj_weight, config->dim, kv_dim);
+    MathUtils::matmul(runState->v, runState->xb, layer_weights.v_proj_weight, config->dim, kv_dim);
 
     // 3. rotary embedding
     RoPE(pos);
@@ -119,7 +71,7 @@ void Inference::layer_forward(int layer_id, int pos) {
             runState->att[h * config->max_seq_len + t] /= std::sqrt(static_cast<float>(config->head_dim));
         }
 
-        softmax(runState->att + h * config->max_seq_len, pos + 1);
+        MathUtils::softmax(runState->att + h * config->max_seq_len, pos + 1);
 
         float *xb_head = runState->xb + h * config->head_dim;
         std::memset(xb_head, 0, sizeof(float) * config->head_dim);
@@ -135,7 +87,7 @@ void Inference::layer_forward(int layer_id, int pos) {
 
     // 6. attention output projection
     // xb_head (d,) @ o_proj (d,d)
-    matmul(runState->xb2, runState->xb, layer_weights.o_proj_weight, config->dim, config->dim);
+    MathUtils::matmul(runState->xb2, runState->xb, layer_weights.o_proj_weight, config->dim, config->dim);
 
     // residual
     for (int i=0; i < config->dim; ++i) {
@@ -143,15 +95,15 @@ void Inference::layer_forward(int layer_id, int pos) {
     }
 
     // 7. FFN
-    RMSnorm(runState->xb, runState->x, layer_weights.mlp_norm_weight, config->dim, config->norm_eps);
+    MathUtils::RMSnorm(runState->xb, runState->x, layer_weights.mlp_norm_weight, config->dim, config->norm_eps);
 
-    matmul(runState->hb, runState->xb, layer_weights.mlp_w1_weight, config->dim, config->hidden_dim);
-    matmul(runState->hb2, runState->xb, layer_weights.mlp_w3_weight, config->dim, config->hidden_dim);
-    silu(runState->hb, config->hidden_dim);
+    MathUtils::matmul(runState->hb, runState->xb, layer_weights.mlp_w1_weight, config->dim, config->hidden_dim);
+    MathUtils::matmul(runState->hb2, runState->xb, layer_weights.mlp_w3_weight, config->dim, config->hidden_dim);
+    MathUtils::silu(runState->hb, config->hidden_dim);
     for (int i=0; i < config->hidden_dim; ++i) {
         runState->hb[i] *= runState->hb2[i];
     }
-    matmul(runState->xb2, runState->hb, layer_weights.mlp_w2_weight, config->hidden_dim, config->dim);
+    MathUtils::matmul(runState->xb2, runState->hb, layer_weights.mlp_w2_weight, config->hidden_dim, config->dim);
 
     for (int i=0; i < config->dim; ++i) {
         runState->x[i] += runState->xb2[i];
@@ -169,8 +121,8 @@ void Inference::forward(int token, int pos) {
     }
 
     // 3. final normalization
-    RMSnorm(runState->xb, runState->x, weights->final_norm_weight, config->dim, config->norm_eps);
+    MathUtils::RMSnorm(runState->xb, runState->x, weights->final_norm_weight, config->dim, config->norm_eps);
 
     // 4. final out projection
-    matmul(runState->logits, runState->xb, weights->output_proj_weight, config->dim, config->vocab_size);
+    MathUtils::matmul(runState->logits, runState->xb, weights->output_proj_weight, config->dim, config->vocab_size);
 }
