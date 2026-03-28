@@ -8,6 +8,19 @@
 
 #include "errorUtils.hpp"
 
+struct TrieNode {
+    int token_id; // if token_id is -1, it means it's not a complete token.
+
+    TrieNode *children[256];
+
+    TrieNode() {
+        token_id = -1;
+        for (auto & i : children) {
+            i = nullptr;
+        }
+    }
+};
+
 class Tokenizer {
 public:
     Tokenizer() = default;
@@ -19,6 +32,7 @@ public:
 private:
     std::vector<std::string> tokens;
     std::unordered_map<std::string, int> token2idx;
+    TrieNode *root;
     int bos_token;
     int eos_token;
 
