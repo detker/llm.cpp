@@ -31,7 +31,7 @@ int main(int argc, char **argv) {
     MiscUtils::ParseResult args = MiscUtils::parseArgs(argc, argv);
     DataUtils dataUtils(args.model_path.c_str());
     Config config = dataUtils.getConfig();
-    TransformerWeights weights = dataUtils.mapModelWeights();
+    TransformerWeightsFP16 weights = dataUtils.mapModelWeights();
     Tokenizer tokenizer = dataUtils.getTokenizer();
     RunState runState = RunState(config);
     Inference inference(&config, &runState, &weights);
@@ -46,9 +46,11 @@ int main(int argc, char **argv) {
     printf("Model Answer: ");
     fflush(stdout);
 
+
     std::vector<int> input_tokens_ids = tokenizer.encode(args.txt, config.max_seq_len);
     for (uint i = 0; i < input_tokens_ids.size(); i++) {
         inference.forward(input_tokens_ids[i], i);
+
     }
 
     timerManager.Start();
@@ -84,6 +86,7 @@ int main(int argc, char **argv) {
     float tokens_per_sec = tokens_generated / elapsed_seconds;
     float latency_s_per_tok = elapsed_seconds / tokens_generated;
 
+    // Get actual model file size using stat
     struct stat model_stat;
     if (stat(args.model_path.c_str(), &model_stat)) {
         ERR("stat error");

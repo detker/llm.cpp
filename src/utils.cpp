@@ -24,6 +24,10 @@ Config& DataUtils::getConfig() {
     std::string json_str(data + sizeof(uint64_t), header_size);
     header = json::parse(json_str);
 
+    for (auto& pair : header.items()) {
+        std::cout << pair.key() << ": " << pair.value() << std::endl;
+    }
+
     // Config config;
     auto metadata = header["__metadata__"];
     config.dtype = metadata["dtype"].get<std::string>() == "fp16" ? DType::FP16 : DType::FP32;
@@ -43,39 +47,39 @@ Config& DataUtils::getConfig() {
     return config;
 }
 
-TransformerWeights& DataUtils::mapModelWeights() {
+TransformerWeightsFP16& DataUtils::mapModelWeights() {
 
     char *weights_start = data + sizeof(uint64_t) + header_size;
 
     auto token_embd_table_offset = static_cast<size_t>(header["model.embed.weight"]["data_offsets"][0]);
-    weights.token_embd_table = reinterpret_cast<const float *>(weights_start + token_embd_table_offset);
+    weights.token_embd_table = reinterpret_cast<const float16_t *>(weights_start + token_embd_table_offset);
 
     auto final_norm_weight_offset = static_cast<size_t>(header["model.norm.weight"]["data_offsets"][0]);
     weights.final_norm_weight = reinterpret_cast<const float *>(weights_start + final_norm_weight_offset);
 
     auto output_proj_weight_offset = static_cast<size_t>(header["model.output.weight"]["data_offsets"][0]);
-    weights.output_proj_weight = reinterpret_cast<const float *>(weights_start + output_proj_weight_offset);
+    weights.output_proj_weight = reinterpret_cast<const float16_t *>(weights_start + output_proj_weight_offset);
 
-    weights.layer_weights = new LayerWeights[config.n_layers];
+    weights.layer_weights = new LayerWeightsFP16[config.n_layers];
     for (int i = 0; i < config.n_layers; ++i) {
         auto &layer = weights.layer_weights[i];
         std::string prefix = "model.layers." + std::to_string(i) + ".";
         auto norm_att_weight_offset = static_cast<size_t>(header[prefix + "attn.norm.weight"]["data_offsets"][0]);
         layer.norm_att_weight = reinterpret_cast<const float *>(weights_start + norm_att_weight_offset);
         auto wk_att_weight_offset = static_cast<size_t>(header[prefix + "attn.wk.weight"]["data_offsets"][0]);
-        layer.k_proj_weight = reinterpret_cast<const float *>(weights_start + wk_att_weight_offset);
+        layer.k_proj_weight = reinterpret_cast<const float16_t *>(weights_start + wk_att_weight_offset);
         auto wo_att_weight_offset = static_cast<size_t>(header[prefix + "attn.wo.weight"]["data_offsets"][0]);
-        layer.o_proj_weight = reinterpret_cast<const float *>(weights_start + wo_att_weight_offset);
+        layer.o_proj_weight = reinterpret_cast<const float16_t *>(weights_start + wo_att_weight_offset);
         auto wq_att_weight_offset = static_cast<size_t>(header[prefix + "attn.wq.weight"]["data_offsets"][0]);
-        layer.q_proj_weight = reinterpret_cast<const float *>(weights_start + wq_att_weight_offset);
+        layer.q_proj_weight = reinterpret_cast<const float16_t *>(weights_start + wq_att_weight_offset);
         auto wv_att_weight_offset = static_cast<size_t>(header[prefix + "attn.wv.weight"]["data_offsets"][0]);
-        layer.v_proj_weight = reinterpret_cast<const float *>(weights_start + wv_att_weight_offset);
+        layer.v_proj_weight = reinterpret_cast<const float16_t *>(weights_start + wv_att_weight_offset);
         auto mlp_w1_weight_offset = static_cast<size_t>(header[prefix + "mlp.w1.weight"]["data_offsets"][0]);
-        layer.mlp_w1_weight = reinterpret_cast<const float *>(weights_start + mlp_w1_weight_offset);
+        layer.mlp_w1_weight = reinterpret_cast<const float16_t *>(weights_start + mlp_w1_weight_offset);
         auto mlp_w2_weight_offset = static_cast<size_t>(header[prefix + "mlp.w2.weight"]["data_offsets"][0]);
-        layer.mlp_w2_weight = reinterpret_cast<const float *>(weights_start + mlp_w2_weight_offset);
+        layer.mlp_w2_weight = reinterpret_cast<const float16_t *>(weights_start + mlp_w2_weight_offset);
         auto mlp_w3_weight_offset = static_cast<size_t>(header[prefix + "mlp.w3.weight"]["data_offsets"][0]);
-        layer.mlp_w3_weight = reinterpret_cast<const float *>(weights_start + mlp_w3_weight_offset);
+        layer.mlp_w3_weight = reinterpret_cast<const float16_t *>(weights_start + mlp_w3_weight_offset);
         auto mlp_norm_weight_offset = static_cast<size_t>(header[prefix + "mlp.norm.weight"]["data_offsets"][0]);
         layer.mlp_norm_weight = reinterpret_cast<const float *>(weights_start + mlp_norm_weight_offset);
     }
@@ -121,6 +125,37 @@ void MathUtils::matmul(float *xout, float *x, const float *w, int n, int d) {
     }
 }
 
+void MathUtils::matmul_fp16(float *xout, float *x, const float16_t *w, int n, int d) {
+#if defined(__AVX2__) && defined(__F16C__)
+    int i;
+    assert(n % 16 == 0);
+#pragma omp parallel for private(i)
+    for (i = 0; i < d; ++i) {
+        // intel primitives
+        __m256 sumlo = _mm256_setzero_ps();
+        __m256 sumhi = _mm256_setzero_ps();
+        for (int j = 0; j < n; j += 16) {
+            __m256i w_vec_16fp16 = _mm256_loadu_si256((__m256i*)&w[i * n + j]);
+            __m128i w_vec_hi = _mm256_extractf128_si256(w_vec_16fp16, 1);
+            __m128i w_vec_lo = _mm256_extractf128_si256(w_vec_16fp16, 0);
+            __m256 x_vec_8b_lo = _mm256_loadu_ps(&x[j]);
+            __m256 x_vec_8b_hi = _mm256_loadu_ps(&x[j+8]);
+            __m256 w_vec_hi_256b = _mm256_cvtph_ps(w_vec_hi);
+            __m256 w_vec_lo_256b = _mm256_cvtph_ps(w_vec_lo);
+            sumlo = _mm256_fmadd_ps(w_vec_lo_256b, x_vec_8b_lo, sumlo);
+            sumhi = _mm256_fmadd_ps(w_vec_hi_256b, x_vec_8b_hi, sumhi);
+        }
+        __m256 sum8 = _mm256_add_ps(sumlo, sumhi);
+        __m128 sum4 = _mm_add_ps(_mm256_extractf128_ps(sum8, 1), _mm256_extractf128_ps(sum8, 0));
+        __m128 sum1 = _mm_dp_ps(sum4, _mm_set1_ps(1.0f), 0xF1);
+        xout[i] = _mm_cvtss_f32(sum1);
+    }
+
+#else
+    ERR("FP16 matmul not supported on this platform");
+#endif
+}
+
 // x_i: (x_i/sqrt(1/N * sum(x_j^2)+eps)) * w_i
 void MathUtils::RMSnorm(float *xout, float *x, const float *w, int d, float eps) {
     float mean_square = 0.0f;
@@ -130,10 +165,12 @@ void MathUtils::RMSnorm(float *xout, float *x, const float *w, int d, float eps)
     mean_square /= d;
 
     float norm_factor = 1.0f / std::sqrt(mean_square + eps);
-    for (int i = 0; i < d; ++i) {
+    int i;
+    for (i = 0; i < d; ++i) {
         xout[i] = (x[i] * norm_factor) * w[i];
     }
 }
+
 
 void MathUtils::softmax(float *x, int size) {
     float max_val = x[0];

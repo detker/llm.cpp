@@ -1,5 +1,13 @@
 cmake_minimum_required(VERSION 3.20)
 
+if(NOT DEFINED ENV{CUDACXX} AND NOT CMAKE_CUDA_COMPILER)
+  if(EXISTS "/usr/local/cuda-12.6/bin/nvcc")
+    set(CMAKE_CUDA_COMPILER "/usr/local/cuda-12.6/bin/nvcc")
+  elseif(EXISTS "/usr/local/cuda/bin/nvcc")
+    set(CMAKE_CUDA_COMPILER "/usr/local/cuda/bin/nvcc")
+  endif()
+endif()
+
 project(llm_cpp LANGUAGES CXX CUDA)
 
 set(CMAKE_CXX_STANDARD 20)

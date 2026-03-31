@@ -1,7 +1,7 @@
 #include "Inference.hpp"
 
 
-Inference::Inference(Config *config, RunState *runState, TransformerWeights *weights): config(config), runState(runState), weights(weights) {}
+Inference::Inference(Config *config, RunState *runState, TransformerWeightsFP16 *weights): config(config), runState(runState), weights(weights) {}
 
 void Inference::RoPE(int pos) {
     const auto theta = config->rope_theta;
@@ -45,9 +45,9 @@ void Inference::layer_forward(int layer_id, int pos) {
     int kv_dim = (config->dim / config->n_heads) * config->n_kv_heads;
 
     // 2. qkv projection
-    MathUtils::matmul(runState->q, runState->xb, layer_weights.q_proj_weight, config->dim, config->dim);
-    MathUtils::matmul(runState->k, runState->xb, layer_weights.k_proj_weight, config->dim, kv_dim);
-    MathUtils::matmul(runState->v, runState->xb, layer_weights.v_proj_weight, config->dim, kv_dim);
+    MathUtils::matmul_fp16(runState->q, runState->xb, layer_weights.q_proj_weight, config->dim, config->dim);
+    MathUtils::matmul_fp16(runState->k, runState->xb, layer_weights.k_proj_weight, config->dim, kv_dim);
+    MathUtils::matmul_fp16(runState->v, runState->xb, layer_weights.v_proj_weight, config->dim, kv_dim);
 
     // 3. rotary embedding
     RoPE(pos);
@@ -58,7 +58,9 @@ void Inference::layer_forward(int layer_id, int pos) {
     // 5. attention score calculation
     int kv_mul = config->n_heads / config->n_kv_heads; // how many q heads per one kv head
     std::memset(runState->att, 0, sizeof(float) * config->n_heads * config->max_seq_len);
-    for (int h = 0; h < config->n_heads; ++h) {
+    int h;
+#pragma omp parallel for private(h)
+    for (h = 0; h < config->n_heads; ++h) {
         auto q_head_start = runState->q + h * config->head_dim;
         int kv_head_id = h / kv_mul; // which kv head should q head h use
 
@@ -87,33 +89,37 @@ void Inference::layer_forward(int layer_id, int pos) {
 
     // 6. attention output projection
     // xb_head (d,) @ o_proj (d,d)
-    MathUtils::matmul(runState->xb2, runState->xb, layer_weights.o_proj_weight, config->dim, config->dim);
+    MathUtils::matmul_fp16(runState->xb2, runState->xb, layer_weights.o_proj_weight, config->dim, config->dim);
 
     // residual
-    for (int i=0; i < config->dim; ++i) {
+    int i;
+    for (i=0; i < config->dim; ++i) {
         runState->x[i] += runState->xb2[i];
     }
 
     // 7. FFN
     MathUtils::RMSnorm(runState->xb, runState->x, layer_weights.mlp_norm_weight, config->dim, config->norm_eps);
 
-    MathUtils::matmul(runState->hb, runState->xb, layer_weights.mlp_w1_weight, config->dim, config->hidden_dim);
-    MathUtils::matmul(runState->hb2, runState->xb, layer_weights.mlp_w3_weight, config->dim, config->hidden_dim);
+    MathUtils::matmul_fp16(runState->hb, runState->xb, layer_weights.mlp_w1_weight, config->dim, config->hidden_dim);
+    MathUtils::matmul_fp16(runState->hb2, runState->xb, layer_weights.mlp_w3_weight, config->dim, config->hidden_dim);
     MathUtils::silu(runState->hb, config->hidden_dim);
-    for (int i=0; i < config->hidden_dim; ++i) {
+
+    for (i=0; i < config->hidden_dim; ++i) {
         runState->hb[i] *= runState->hb2[i];
     }
-    MathUtils::matmul(runState->xb2, runState->hb, layer_weights.mlp_w2_weight, config->hidden_dim, config->dim);
 
-    for (int i=0; i < config->dim; ++i) {
+    MathUtils::matmul_fp16(runState->xb2, runState->hb, layer_weights.mlp_w2_weight, config->hidden_dim, config->dim);
+
+    for (i=0; i < config->dim; ++i) {
         runState->x[i] += runState->xb2[i];
     }
 }
 
+
 void Inference::forward(int token, int pos) {
     // 1. input embedding
     auto embd_vec = weights->token_embd_table + token * config->dim;
-    std::memcpy(runState->x, embd_vec, sizeof(float) * config->dim);
+    std::ranges::transform(embd_vec, embd_vec+config->dim, runState->x, half_to_float);
 
     // 2. layers loop
     for (int layer_id = 0; layer_id < config->n_layers; ++layer_id) {
@@ -124,5 +130,5 @@ void Inference::forward(int token, int pos) {
     MathUtils::RMSnorm(runState->xb, runState->x, weights->final_norm_weight, config->dim, config->norm_eps);
 
     // 4. final out projection
-    MathUtils::matmul(runState->logits, runState->xb, weights->output_proj_weight, config->dim, config->vocab_size);
+    MathUtils::matmul_fp16(runState->logits, runState->xb, weights->output_proj_weight, config->dim, config->vocab_size);
 }

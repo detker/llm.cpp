@@ -21,8 +21,7 @@ int Sampler::sample_argmax(float *logits, int vocab_size) {
 }
 
 int Sampler::sample_temperature(float *logits, int vocab_size, float temperature) {
-    // srand(time(NULL));
-    // std::cout << (float)rand() / (float)RAND_MAX << " " << temperature << std::endl;
+    srand(time(NULL));
     if (temperature <= 0.0f) {
         return sample_argmax(logits, vocab_size);
     }
