@@ -21,8 +21,6 @@ public:
 
     RunState(Config &config);
     ~RunState();
-private:
-    Config *config;
 };
 
 #endif //LLM_CPP_RUNSTATE_HPP

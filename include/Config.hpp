@@ -11,8 +11,7 @@ enum ActType {
 
 enum DType {
     FP32,
-    FP16,
-    BF16
+    FP16
 };
 
 struct Config {

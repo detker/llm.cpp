@@ -19,16 +19,11 @@ DataUtils::DataUtils(const char *model_path) {
     }
 }
 
-Config& DataUtils::getConfig() {
+Config DataUtils::getConfig() {
     header_size = *reinterpret_cast<uint64_t *>(data);
     std::string json_str(data + sizeof(uint64_t), header_size);
     header = json::parse(json_str);
 
-    for (auto& pair : header.items()) {
-        std::cout << pair.key() << ": " << pair.value() << std::endl;
-    }
-
-    // Config config;
     auto metadata = header["__metadata__"];
     config.dtype = metadata["dtype"].get<std::string>() == "fp16" ? DType::FP16 : DType::FP32;
     config.dim = std::stoi(metadata["dim"].get<std::string>());
@@ -47,39 +42,40 @@ Config& DataUtils::getConfig() {
     return config;
 }
 
-TransformerWeightsFP16& DataUtils::mapModelWeights() {
-
+template<FP1632 T>
+std::unique_ptr<TransformerWeightsAuto<T>> DataUtils::mapModelWeights() {
+    std::unique_ptr<TransformerWeightsAuto<T>> weights = std::make_unique<TransformerWeightsAuto<T>>();
     char *weights_start = data + sizeof(uint64_t) + header_size;
 
     auto token_embd_table_offset = static_cast<size_t>(header["model.embed.weight"]["data_offsets"][0]);
-    weights.token_embd_table = reinterpret_cast<const float16_t *>(weights_start + token_embd_table_offset);
+    weights->token_embd_table = reinterpret_cast<const T *>(weights_start + token_embd_table_offset);
 
     auto final_norm_weight_offset = static_cast<size_t>(header["model.norm.weight"]["data_offsets"][0]);
-    weights.final_norm_weight = reinterpret_cast<const float *>(weights_start + final_norm_weight_offset);
+    weights->final_norm_weight = reinterpret_cast<const float *>(weights_start + final_norm_weight_offset);
 
     auto output_proj_weight_offset = static_cast<size_t>(header["model.output.weight"]["data_offsets"][0]);
-    weights.output_proj_weight = reinterpret_cast<const float16_t *>(weights_start + output_proj_weight_offset);
+    weights->output_proj_weight = reinterpret_cast<const T *>(weights_start + output_proj_weight_offset);
 
-    weights.layer_weights = new LayerWeightsFP16[config.n_layers];
+    weights->layer_weights = std::make_unique<LayerWeightsAuto<T>[]>(config.n_layers);
     for (int i = 0; i < config.n_layers; ++i) {
-        auto &layer = weights.layer_weights[i];
+        auto &layer = weights->layer_weights[i];
         std::string prefix = "model.layers." + std::to_string(i) + ".";
         auto norm_att_weight_offset = static_cast<size_t>(header[prefix + "attn.norm.weight"]["data_offsets"][0]);
         layer.norm_att_weight = reinterpret_cast<const float *>(weights_start + norm_att_weight_offset);
         auto wk_att_weight_offset = static_cast<size_t>(header[prefix + "attn.wk.weight"]["data_offsets"][0]);
-        layer.k_proj_weight = reinterpret_cast<const float16_t *>(weights_start + wk_att_weight_offset);
+        layer.k_proj_weight = reinterpret_cast<const T *>(weights_start + wk_att_weight_offset);
         auto wo_att_weight_offset = static_cast<size_t>(header[prefix + "attn.wo.weight"]["data_offsets"][0]);
-        layer.o_proj_weight = reinterpret_cast<const float16_t *>(weights_start + wo_att_weight_offset);
+        layer.o_proj_weight = reinterpret_cast<const T *>(weights_start + wo_att_weight_offset);
         auto wq_att_weight_offset = static_cast<size_t>(header[prefix + "attn.wq.weight"]["data_offsets"][0]);
-        layer.q_proj_weight = reinterpret_cast<const float16_t *>(weights_start + wq_att_weight_offset);
+        layer.q_proj_weight = reinterpret_cast<const T *>(weights_start + wq_att_weight_offset);
         auto wv_att_weight_offset = static_cast<size_t>(header[prefix + "attn.wv.weight"]["data_offsets"][0]);
-        layer.v_proj_weight = reinterpret_cast<const float16_t *>(weights_start + wv_att_weight_offset);
+        layer.v_proj_weight = reinterpret_cast<const T *>(weights_start + wv_att_weight_offset);
         auto mlp_w1_weight_offset = static_cast<size_t>(header[prefix + "mlp.w1.weight"]["data_offsets"][0]);
-        layer.mlp_w1_weight = reinterpret_cast<const float16_t *>(weights_start + mlp_w1_weight_offset);
+        layer.mlp_w1_weight = reinterpret_cast<const T *>(weights_start + mlp_w1_weight_offset);
         auto mlp_w2_weight_offset = static_cast<size_t>(header[prefix + "mlp.w2.weight"]["data_offsets"][0]);
-        layer.mlp_w2_weight = reinterpret_cast<const float16_t *>(weights_start + mlp_w2_weight_offset);
+        layer.mlp_w2_weight = reinterpret_cast<const T *>(weights_start + mlp_w2_weight_offset);
         auto mlp_w3_weight_offset = static_cast<size_t>(header[prefix + "mlp.w3.weight"]["data_offsets"][0]);
-        layer.mlp_w3_weight = reinterpret_cast<const float16_t *>(weights_start + mlp_w3_weight_offset);
+        layer.mlp_w3_weight = reinterpret_cast<const T *>(weights_start + mlp_w3_weight_offset);
         auto mlp_norm_weight_offset = static_cast<size_t>(header[prefix + "mlp.norm.weight"]["data_offsets"][0]);
         layer.mlp_norm_weight = reinterpret_cast<const float *>(weights_start + mlp_norm_weight_offset);
     }
@@ -87,23 +83,15 @@ TransformerWeightsFP16& DataUtils::mapModelWeights() {
     return weights;
 }
 
-Tokenizer& DataUtils::getTokenizer() {
+std::unique_ptr<Tokenizer> DataUtils::getTokenizer() {
     char *weights_start = data + sizeof(uint64_t) + header_size;
     auto tokens = weights_start + static_cast<size_t>(header["tokenizer.tokens"]["data_offsets"][0]);
-    tokenizer = Tokenizer(tokens, config.vocab_size, config.bos_token_id, config.eos_token_id);
-    return tokenizer;
-}
+    std::unique_ptr<Tokenizer> tokenizer_ptr = std::make_unique<Tokenizer>(tokens, config.vocab_size, config.bos_token_id, config.eos_token_id);
 
-uint64_t DataUtils::getTokenizerSize() const {
-    auto tokenizer_offset = static_cast<size_t>(header["tokenizer.tokens"]["data_offsets"][0]);
-    uint64_t tokenizer_absolute_pos = sizeof(uint64_t) + header_size + tokenizer_offset;
-
-    uint64_t tokenizer_size = file_size - tokenizer_absolute_pos;
-    return tokenizer_size;
+    return tokenizer_ptr;
 }
 
 DataUtils::~DataUtils() {
-    delete[] weights.layer_weights;
     if (munmap(data, file_size)) {
         ERR("munmap error");
     }
@@ -209,3 +197,32 @@ MiscUtils::ParseResult MiscUtils::parseArgs(int argc, char **argv) {
 
     return MiscUtils::ParseResult{.model_path = model_path, .txt = txt, .temperature = temp};
 }
+
+long long MiscUtils::calcWeightSize(const char *model_path, int header_size, int tokenizer_size) {
+    struct stat model_stat;
+    if (stat(model_path, &model_stat)) {
+        ERR("stat error");
+    }
+    long long file_size = model_stat.st_size;
+    long long weights_size_bytes = file_size - sizeof(uint64_t) - header_size - tokenizer_size;
+
+    return weights_size_bytes;
+}
+
+void MiscUtils::printMetrics(MiscUtils::Metrics &metrics) {
+    float tokens_per_sec = metrics.tokens_generated / metrics.elapsed_seconds;
+    float latency_s_per_tok = metrics.elapsed_seconds / metrics.tokens_generated;
+
+    double total_bytes_read = (double)metrics.weights_size_bytes * metrics.tokens_generated;
+    double bandwidth_gb_per_sec = (total_bytes_read / (1024.0 * 1024.0 * 1024.0)) / metrics.elapsed_seconds;
+
+    std::cout << std::endl;
+    std::cout << "Generation time: " << metrics.elapsed_seconds << " seconds" << std::endl;
+    std::cout << "Tokens generated: " << metrics.tokens_generated << std::endl;
+    std::cout << "Tokens per second: " << tokens_per_sec << " tok/s" << std::endl;
+    std::cout << "Latency: " << latency_s_per_tok << " s/tok" << std::endl;
+    std::cout << "Bandwidth: " << bandwidth_gb_per_sec << " GB/s" << std::endl;
+}
+
+template std::unique_ptr<TransformerWeightsAuto<float>> DataUtils::mapModelWeights<float>();
+template std::unique_ptr<TransformerWeightsAuto<float16_t>> DataUtils::mapModelWeights<float16_t>();

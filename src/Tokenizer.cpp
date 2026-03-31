@@ -1,19 +1,21 @@
 #include "Tokenizer.hpp"
 
 #include <iostream>
-#include <ostream>
+
 
 Tokenizer::Tokenizer(char *tokens, int vocab_size, int bos_token, int eos_token): bos_token(bos_token), eos_token(eos_token) {
-    this->root = new TrieNode();
+    this->root = std::make_unique<TrieNode>();
     this->tokens = std::vector<std::string>(vocab_size);
     for (size_t i = 0; i < vocab_size; ++i) {
         this->tokens[i] = std::string(tokens);
         tokens += this->tokens[i].size() + 1; // move to the next token (including null terminator)
 
-        auto p = this->root;
+        auto p = this->root.get();
         for (unsigned char c : this->tokens[i]) {
-            p->children[c] = p->children[c] == nullptr ? new TrieNode() : p->children[c];
-            p = p->children[c];
+            if (!p->children[c]) {
+                p->children[c] = std::make_unique<TrieNode>();
+            }
+            p = p->children[c].get();
         }
 
         p->token_id = i;
@@ -40,17 +42,17 @@ std::vector<int> Tokenizer::encode(std::string txt, int max_tokens) {
     while (any_merged) {
         any_merged = false;
 
-        for (size_t i = 0; i < words.size()-1; ++i) {
+        for (size_t i = 0; i+1 < words.size(); ++i) {
             std::string merged = words[i] + words[i+1];
 
-            auto p = this->root;
+            auto p = this->root.get();
             for (unsigned char c : merged) {
-                p = p->children[c];
-                if (p == nullptr) {
+                p = p->children[c].get();
+                if (!p) {
                     break;
                 }
             }
-            if (p != nullptr && p->token_id != -1) {
+            if (p && p->token_id != -1) {
                 words[i] = merged;
                 words.erase(words.begin() + i + 1);
                 any_merged = true;
@@ -60,14 +62,14 @@ std::vector<int> Tokenizer::encode(std::string txt, int max_tokens) {
     }
 
     for (const auto & word : words) {
-        auto p = this->root;
+        auto p = this->root.get();
         for (unsigned char c : word) {
-            p = p->children[c];
-            if (p == nullptr) {
+            p = p->children[c].get();
+            if (!p) {
                 break;
             }
         }
-        if (p == nullptr || p->token_id == -1) {
+        if (!p || p->token_id == -1) {
             ERR(("Token not found in vocabulary: " + word).c_str());
         }
         res.push_back(p->token_id);

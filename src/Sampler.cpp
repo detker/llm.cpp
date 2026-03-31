@@ -5,6 +5,10 @@
 #include <locale>
 
 #include <Inference.hpp>
+#include <random>
+
+
+Sampler::Sampler(std::mt19937 &rng): rng{rng} {}
 
 int Sampler::sample_argmax(float *logits, int vocab_size) {
     int max_index = 0;
@@ -21,7 +25,6 @@ int Sampler::sample_argmax(float *logits, int vocab_size) {
 }
 
 int Sampler::sample_temperature(float *logits, int vocab_size, float temperature) {
-    srand(time(NULL));
     if (temperature <= 0.0f) {
         return sample_argmax(logits, vocab_size);
     }
@@ -33,7 +36,7 @@ int Sampler::sample_temperature(float *logits, int vocab_size, float temperature
 
     MathUtils::softmax(logits, vocab_size);
 
-    float x = static_cast<float>(rand()) / static_cast<float>(RAND_MAX);
+    float x = static_cast<float>(this->rng()) / static_cast<float>(std::mt19937::max());
 
     float sum = 0.0f;
     for (int i = 0; i < vocab_size; ++i) {

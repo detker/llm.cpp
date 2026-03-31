@@ -1,9 +1,13 @@
 #include "Inference.hpp"
+#include <algorithm>
 
 
-Inference::Inference(Config *config, RunState *runState, TransformerWeightsFP16 *weights): config(config), runState(runState), weights(weights) {}
+template<FP1632 T>
+Inference<T>::Inference(Config *config, RunState *runState, std::unique_ptr<TransformerWeightsAuto<T>> weights)
+    : config(config), runState(runState), weights(std::move(weights)) {}
 
-void Inference::RoPE(int pos) {
+template<FP1632 T>
+void Inference<T>::RoPE(int pos) {
     const auto theta = config->rope_theta;
     const int kv_dim = (config->dim / config->n_heads) * config->n_kv_heads;
 
@@ -30,13 +34,15 @@ void Inference::RoPE(int pos) {
     }
 }
 
-void Inference::UpdateKVCache(int layer_id, int pos) {
+template<FP1632 T>
+void Inference<T>::UpdateKVCache(int layer_id, int pos) {
     int kv_dim = (config->dim / config->n_heads) * config->n_kv_heads;
     std::memcpy(runState->key_cache + layer_id * config->max_seq_len * kv_dim + pos * kv_dim, runState->k, sizeof(float) * kv_dim);
     std::memcpy(runState->value_cache + layer_id * config->max_seq_len * kv_dim + pos * kv_dim, runState->v, sizeof(float) * kv_dim);
 }
 
-void Inference::layer_forward(int layer_id, int pos) {
+template <FP1632 T>
+void Inference<T>::layer_forward(int layer_id, int pos) {
     auto &layer_weights = weights->layer_weights[layer_id];
 
     // 1. attn norm
@@ -45,9 +51,9 @@ void Inference::layer_forward(int layer_id, int pos) {
     int kv_dim = (config->dim / config->n_heads) * config->n_kv_heads;
 
     // 2. qkv projection
-    MathUtils::matmul_fp16(runState->q, runState->xb, layer_weights.q_proj_weight, config->dim, config->dim);
-    MathUtils::matmul_fp16(runState->k, runState->xb, layer_weights.k_proj_weight, config->dim, kv_dim);
-    MathUtils::matmul_fp16(runState->v, runState->xb, layer_weights.v_proj_weight, config->dim, kv_dim);
+    this->matmul(runState->q, runState->xb, layer_weights.q_proj_weight, config->dim, config->dim);
+    this->matmul(runState->k, runState->xb, layer_weights.k_proj_weight, config->dim, kv_dim);
+    this->matmul(runState->v, runState->xb, layer_weights.v_proj_weight, config->dim, kv_dim);
 
     // 3. rotary embedding
     RoPE(pos);
@@ -89,7 +95,7 @@ void Inference::layer_forward(int layer_id, int pos) {
 
     // 6. attention output projection
     // xb_head (d,) @ o_proj (d,d)
-    MathUtils::matmul_fp16(runState->xb2, runState->xb, layer_weights.o_proj_weight, config->dim, config->dim);
+    this->matmul(runState->xb2, runState->xb, layer_weights.o_proj_weight, config->dim, config->dim);
 
     // residual
     int i;
@@ -100,26 +106,33 @@ void Inference::layer_forward(int layer_id, int pos) {
     // 7. FFN
     MathUtils::RMSnorm(runState->xb, runState->x, layer_weights.mlp_norm_weight, config->dim, config->norm_eps);
 
-    MathUtils::matmul_fp16(runState->hb, runState->xb, layer_weights.mlp_w1_weight, config->dim, config->hidden_dim);
-    MathUtils::matmul_fp16(runState->hb2, runState->xb, layer_weights.mlp_w3_weight, config->dim, config->hidden_dim);
+    this->matmul(runState->hb, runState->xb, layer_weights.mlp_w1_weight, config->dim, config->hidden_dim);
+    this->matmul(runState->hb2, runState->xb, layer_weights.mlp_w3_weight, config->dim, config->hidden_dim);
     MathUtils::silu(runState->hb, config->hidden_dim);
 
     for (i=0; i < config->hidden_dim; ++i) {
         runState->hb[i] *= runState->hb2[i];
     }
 
-    MathUtils::matmul_fp16(runState->xb2, runState->hb, layer_weights.mlp_w2_weight, config->hidden_dim, config->dim);
+    this->matmul(runState->xb2, runState->hb, layer_weights.mlp_w2_weight, config->hidden_dim, config->dim);
 
     for (i=0; i < config->dim; ++i) {
         runState->x[i] += runState->xb2[i];
     }
 }
 
-
-void Inference::forward(int token, int pos) {
+template<FP1632 T>
+void Inference<T>::forward(int token, int pos) {
     // 1. input embedding
     auto embd_vec = weights->token_embd_table + token * config->dim;
-    std::ranges::transform(embd_vec, embd_vec+config->dim, runState->x, half_to_float);
+
+    if constexpr (std::same_as<T, float>) {
+        // FP32: direct copy
+        std::ranges::copy(embd_vec, embd_vec+config->dim, runState->x);
+    } else {
+        // FP16: convert to FP32
+        std::ranges::transform(embd_vec, embd_vec+config->dim, runState->x, half_to_float);
+    }
 
     // 2. layers loop
     for (int layer_id = 0; layer_id < config->n_layers; ++layer_id) {
@@ -130,5 +143,8 @@ void Inference::forward(int token, int pos) {
     MathUtils::RMSnorm(runState->xb, runState->x, weights->final_norm_weight, config->dim, config->norm_eps);
 
     // 4. final out projection
-    MathUtils::matmul_fp16(runState->logits, runState->xb, weights->output_proj_weight, config->dim, config->vocab_size);
+    this->matmul(runState->logits, runState->xb, weights->output_proj_weight, config->dim, config->vocab_size);
 }
+
+template class Inference<float>;
+template class Inference<float16_t>;

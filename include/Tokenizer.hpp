@@ -1,6 +1,7 @@
 #ifndef LLM_CPP_TOKENIZER_HPP
 #define LLM_CPP_TOKENIZER_HPP
 
+#include <memory>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -11,7 +12,7 @@
 struct TrieNode {
     int token_id; // if token_id is -1, it means it's not a complete token.
 
-    TrieNode *children[256];
+    std::unique_ptr<TrieNode> children[256];
 
     TrieNode() {
         token_id = -1;
@@ -32,10 +33,9 @@ public:
 private:
     std::vector<std::string> tokens;
     std::unordered_map<std::string, int> token2idx;
-    TrieNode *root;
+    std::unique_ptr<TrieNode> root;
     int bos_token;
     int eos_token;
-
 };
 
 #endif //LLM_CPP_TOKENIZER_HPP

@@ -17,8 +17,6 @@ RunState::RunState(Config &config) {
     int kv_dim = (config.dim / config.n_heads) * config.n_kv_heads;
     key_cache = new float[config.n_layers * config.max_seq_len * kv_dim];
     value_cache = new float[config.n_layers * config.max_seq_len * kv_dim];
-
-    this->config = &config;
 }
 
 RunState::~RunState() {

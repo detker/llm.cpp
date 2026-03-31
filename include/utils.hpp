@@ -24,15 +24,12 @@ class DataUtils {
 public:
     DataUtils(const char *model_path);
     ~DataUtils();
-    Config& getConfig();
-    TransformerWeightsFP16& mapModelWeights();
-    Tokenizer& getTokenizer();
+    Config getConfig();
+    template <FP1632 T> std::unique_ptr<TransformerWeightsAuto<T>> mapModelWeights();
+    std::unique_ptr<Tokenizer> getTokenizer();
     uint64_t getHeaderSize() const { return header_size; }
-    uint64_t getTokenizerSize() const;
 private:
     Config config;
-    TransformerWeightsFP16 weights;
-    Tokenizer tokenizer;
     char *data;
     size_t file_size;
     int fd;
@@ -57,6 +54,13 @@ public:
         float temperature = 0.0f;
     };
     static ParseResult parseArgs(int argc, char **argv);
+    static long long calcWeightSize(const char *model_path, int header_size, int tokenizer_size);
+    struct Metrics {
+        long long tokens_generated;
+        double elapsed_seconds;
+        long long weights_size_bytes;
+    };
+    static void printMetrics(Metrics &metrics);
 };
 
 #endif //LLM_CPP_UTILS_HPP
