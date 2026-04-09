@@ -1,8 +1,8 @@
 #include "utils.hpp"
 
 
-DataUtils::DataUtils(const char *model_path) {
-    if ((fd = open(model_path, O_RDONLY)) == -1) {
+DataUtils::DataUtils(const MiscUtils::ParseResult &args): config() {
+    if ((fd = open(args.model_path.c_str(), O_RDONLY)) == -1) {
         ERR("open error");
     }
 
@@ -17,6 +17,9 @@ DataUtils::DataUtils(const char *model_path) {
     if (data == MAP_FAILED) {
         ERR("mmap error");
     }
+
+    config.temperature = args.temperature;
+    config.backend = args.backend;
 }
 
 Config DataUtils::getConfig() {
@@ -187,15 +190,16 @@ void MathUtils::silu(float *x, int size) {
 
 
 MiscUtils::ParseResult MiscUtils::parseArgs(int argc, char **argv) {
-    if (argc < 4) {
+    if (argc < 5) {
         usage(argv[0]);
     }
 
     std::string model_path = argv[1];
     std::string txt = argv[2];
     float temp = atof(argv[3]);
+    BackendType backend = std::string(argv[4]) == "cuda" ? BackendType::GPU : BackendType::CPU;
 
-    return MiscUtils::ParseResult{.model_path = model_path, .txt = txt, .temperature = temp};
+    return MiscUtils::ParseResult{.model_path = model_path, .txt = txt, .backend = backend, .temperature = temp};
 }
 
 long long MiscUtils::calcWeightSize(const char *model_path, int header_size, int tokenizer_size) {

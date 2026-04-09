@@ -19,7 +19,7 @@ public:
     float* key_cache;   // [n_layers, seq_len, kv_dim]
     float* value_cache; // [n_layers, seq_len, kv_dim]
 
-    RunState(Config &config);
+    RunState(Config *config);
     ~RunState();
 };
 

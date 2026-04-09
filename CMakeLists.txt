@@ -44,6 +44,8 @@ add_executable(llm_cpp src/main.cpp
         include/Tokenizer.hpp
         src/Tokenizer.cpp
         include/Timer.hpp
+        include/Dispatcher.hpp
+        include/InferenceLoop.hpp
 )
 
 if(NOT CMAKE_CUDA_ARCHITECTURES)

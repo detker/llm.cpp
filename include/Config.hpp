@@ -9,12 +9,18 @@ enum ActType {
     RELU
 };
 
+enum BackendType {
+    CPU,
+    GPU
+};
+
 enum DType {
     FP32,
     FP16
 };
 
 struct Config {
+    BackendType backend;
     ActType act_type;
     std::string arch;
     DType dtype;
@@ -35,6 +41,8 @@ struct Config {
 
     int bos_token_id;
     int eos_token_id;
+
+    float temperature;
 };
 
 #endif //LLM_CPP_CONFIG_HPP

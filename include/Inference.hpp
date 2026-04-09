@@ -9,6 +9,7 @@
 #include "RunState.hpp"
 #include "TransformerWeights.hpp"
 #include "utils.hpp"
+#include "Sampler.hpp"
 
 #if defined(__AVX2__) && defined(__F16C__)
 inline float half_to_float(float16_t x) {
@@ -35,9 +36,10 @@ public:
     ~Inference() = default;
 
     void forward(int token, int pos);
+    RunState *runState;
 private:
     Config *config;
-    RunState *runState;
+
     std::unique_ptr<TransformerWeightsAuto<T>> weights;
 
     void layer_forward(int layer_id, int pos);

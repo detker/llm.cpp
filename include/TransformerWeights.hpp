@@ -2,6 +2,7 @@
 #define LLM_CPP_TRANSFORMERWEIGHTS_HPP
 
 #include <concepts>
+#include <memory>
 
 typedef uint16_t float16_t;
 

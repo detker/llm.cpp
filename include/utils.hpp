@@ -20,9 +20,28 @@ typedef uint16_t float16_t;
 using json = nlohmann::json;
 
 
+class MiscUtils {
+public:
+    struct ParseResult {
+        std::string model_path;
+        std::string txt;
+        BackendType backend;
+        float temperature = 0.0f;
+    };
+    static ParseResult parseArgs(int argc, char **argv);
+    static long long calcWeightSize(const char *model_path, int header_size, int tokenizer_size);
+    struct Metrics {
+        long long tokens_generated;
+        double elapsed_seconds;
+        long long weights_size_bytes;
+    };
+    static void printMetrics(Metrics &metrics);
+};
+
+
 class DataUtils {
 public:
-    DataUtils(const char *model_path);
+    DataUtils(const MiscUtils::ParseResult &args);
     ~DataUtils();
     Config getConfig();
     template <FP1632 T> std::unique_ptr<TransformerWeightsAuto<T>> mapModelWeights();
@@ -46,21 +65,5 @@ public:
     static void silu(float *x, int size);
 };
 
-class MiscUtils {
-public:
-    struct ParseResult {
-        std::string model_path;
-        std::string txt;
-        float temperature = 0.0f;
-    };
-    static ParseResult parseArgs(int argc, char **argv);
-    static long long calcWeightSize(const char *model_path, int header_size, int tokenizer_size);
-    struct Metrics {
-        long long tokens_generated;
-        double elapsed_seconds;
-        long long weights_size_bytes;
-    };
-    static void printMetrics(Metrics &metrics);
-};
 
 #endif //LLM_CPP_UTILS_HPP

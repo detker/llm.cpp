@@ -34,8 +34,8 @@ std::vector<int> Tokenizer::encode(std::string txt, int max_tokens) {
     res.push_back(bos_token);
     std::string input = " " + txt;
     std::vector<std::string> words;
-    for (auto c : input) {
-        words.emplace_back(1, c);
+    for (size_t i = 0; i < std::min(static_cast<int>(input.size()), max_tokens); ++i) {
+        words.emplace_back(1, input[i]);
     }
 
     bool any_merged = true;
