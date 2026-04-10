@@ -3,11 +3,11 @@
 
 
 template<FP1632 T>
-IInference<T>::IInference(Config *config, IRunState *runState, std::unique_ptr<TransformerWeightsAuto<T>> weights)
+IInference<T>::IInference(Config *config, RunState *runState, std::unique_ptr<TransformerWeightsAuto<T>> weights)
     : runState(runState), config(config), weights(std::move(weights)) {}
 
 template<FP1632 T>
-CPUInference<T>::CPUInference(Config *config, IRunState *runState, std::unique_ptr<TransformerWeightsAuto<T>> weights)
+CPUInference<T>::CPUInference(Config *config, RunState *runState, std::unique_ptr<TransformerWeightsAuto<T>> weights)
     : IInference<T>(config, runState, std::move(weights)) { }
 
 template<FP1632 T>
@@ -132,10 +132,10 @@ void CPUInference<T>::forward(int token, int pos) {
 
     if constexpr (std::same_as<T, float>) {
         // FP32: direct copy
-        std::ranges::copy(embd_vec, embd_vec+config->dim, runState->x);
+        std::ranges::copy(embd_vec, embd_vec+config->dim, runState->x.getMutableData());
     } else {
         // FP16: convert to FP32
-        std::ranges::transform(embd_vec, embd_vec+config->dim, runState->x, half_to_float);
+        std::ranges::transform(embd_vec, embd_vec+config->dim, runState->x.getMutableData(), half_to_float);
     }
 
     // 2. layers loop

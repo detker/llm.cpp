@@ -32,11 +32,11 @@ inline f16_t float_to_half(float x) {
 template <FP1632 T>
 class IInference {
 public:
-    IInference(Config *config, IRunState *runState, std::unique_ptr<TransformerWeightsAuto<T>> weights);
+    IInference(Config *config, RunState *runState, std::unique_ptr<TransformerWeightsAuto<T>> weights);
     virtual ~IInference() = default;
 
     virtual void forward(int token, int pos) = 0;
-    IRunState *runState;
+    RunState *runState;
 protected:
     Config *config;
 
@@ -52,7 +52,7 @@ protected:
 template<FP1632 T>
 class CPUInference : public IInference<T> {
 public:
-    CPUInference(Config *config, IRunState *runState, std::unique_ptr<TransformerWeightsAuto<T>> weights);
+    CPUInference(Config *config, RunState *runState, std::unique_ptr<TransformerWeightsAuto<T>> weights);
     ~CPUInference() override = default;
 
     void forward(int token, int pos) override;

@@ -15,7 +15,7 @@
 
 
 struct InferenceDispatcher {
-    static InferenceLoop dispatch(Config *config, IRunState *runState, DataUtils *dataUtils, std::unique_ptr<Tokenizer> tokenizer, Sampler *sampler) {
+    static InferenceLoop dispatch(Config *config, RunState *runState, DataUtils *dataUtils, std::unique_ptr<Tokenizer> tokenizer, Sampler *sampler) {
         std::variant<std::unique_ptr<IInference<float>>, std::unique_ptr<IInference<float16_t>>> inference_variant;
 
         if (config->backend == BackendType::CPU) {
@@ -78,12 +78,12 @@ struct InferenceLauncher
 {
     std::string prompt;
     Config *config;
-    IRunState *runState;
+    RunState *runState;
     std::unique_ptr<Tokenizer> tokenizer;
     DataUtils *dataUtils;
     Sampler *sampler;
 
-    InferenceLauncher(std::string prompt, Config *config, IRunState *runState, DataUtils *dataUtils, std::unique_ptr<Tokenizer> tokenizer, Sampler *sampler)
+    InferenceLauncher(std::string prompt, Config *config, RunState *runState, DataUtils *dataUtils, std::unique_ptr<Tokenizer> tokenizer, Sampler *sampler)
         : prompt{std::move(prompt)}, config{config}, runState{runState}, dataUtils{dataUtils}, tokenizer{std::move(tokenizer)}, sampler{sampler} {}
 
     template<int RuntimeD>
@@ -96,7 +96,7 @@ struct InferenceLauncher
 };
 
 template<int D>
-std::pair<float, int> RunInference(std::string prompt, Config *config, IRunState *runState, DataUtils *dataUtils, std::unique_ptr<Tokenizer> tokenizer, Sampler *sampler)
+std::pair<float, int> RunInference(std::string prompt, Config *config, RunState *runState, DataUtils *dataUtils, std::unique_ptr<Tokenizer> tokenizer, Sampler *sampler)
 {
     InferenceLauncher launcher{std::move(prompt), config, runState, dataUtils, std::move(tokenizer), sampler};
 

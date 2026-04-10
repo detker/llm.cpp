@@ -1,43 +1,27 @@
 #ifndef LLM_CPP_RUNSTATE_HPP
 #define LLM_CPP_RUNSTATE_HPP
 
-#include <cuda_runtime.h>
-
 #include "Config.hpp"
+#include "TransformerWeights.hpp"
 
 
-class IRunState {
+class RunState {
 public:
-    float *x; // [dim]
-    float *xb; // [dim]
-    float *xb2; // [dim]
-    float *hb; // FFN [hidden_dim]
-    float *hb2; // FFN [hidden_dim]
-    float *q; // [dim]
-    float *k; // [dim]
-    float *v; // [dim]
-    float *att; // [n_heads, seq_len]
-    float *logits; //  [vocab_size]
+    RunState(Config *config);
 
-    float *key_cache; // [n_layers, seq_len, kv_dim]
-    float *value_cache; // [n_layers, seq_len, kv_dim]
+    WeightsVector<float> x;           // [dim]
+    WeightsVector<float> xb;          // [dim]
+    WeightsVector<float> xb2;         // [dim]
+    WeightsVector<float> hb;          // [hidden_dim]
+    WeightsVector<float> hb2;         // [hidden_dim]
+    WeightsVector<float> q;           // [dim]
+    WeightsVector<float> k;           // [dim]
+    WeightsVector<float> v;           // [dim]
+    WeightsVector<float> att;         // [n_heads * max_seq_len]
+    WeightsVector<float> logits;      // [vocab_size]
 
-    // IRunState() = delete;
-    // ~IRunState() = delete;
-};
-
-class CPURunState : public IRunState {
-public:
-    CPURunState(Config *config);
-
-    ~CPURunState();
-};
-
-class GPURunState : public IRunState {
-public:
-    GPURunState(Config *config);
-
-    ~GPURunState();
+    WeightsVector<float> key_cache;   // [n_layers * max_seq_len * kv_dim]
+    WeightsVector<float> value_cache; // [n_layers * max_seq_len * kv_dim]
 };
 
 #endif //LLM_CPP_RUNSTATE_HPP

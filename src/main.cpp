@@ -24,7 +24,7 @@ int main(int argc, char **argv) {
     DataUtils dataUtils(args);
     Config config = dataUtils.getConfig();
     std::unique_ptr<Tokenizer> tokenizer = dataUtils.getTokenizer();
-    CPURunState runState(&config);
+    RunState runState(&config);
     Sampler sampler(rng);
 
     auto [elapsed_seconds, tokens_generated] = RunInference<1>(std::move(args.txt), &config, &runState, &dataUtils, std::move(tokenizer), &sampler);

@@ -15,21 +15,39 @@ template<FP1632 T>
 class WeightsVector {
 public:
     WeightsVector() = delete;
+    WeightsVector(const WeightsVector&) = delete;
+    WeightsVector& operator=(const WeightsVector&) = delete;
 
-    WeightsVector(const T *data, int m, int n, DType dtype, BackendType btype): m(m), n(n), btype(btype) {
+    // Wrap existing data (CPU = zero-copy, GPU = copy to device)
+    WeightsVector(const T *data, int m, int n, DType dtype, BackendType btype)
+        : m(m), n(n), btype(btype), owns_memory(btype == BackendType::GPU) {
         if (btype == BackendType::CPU) {
-            this->data = data;
+            this->data = const_cast<T*>(data);
         }
         else if (btype == BackendType::GPU) {
-            // move to cuda memory
             CUDA_CHECK(cudaMalloc((void **)&this->data, this->getSize()));
             CUDA_CHECK(cudaMemcpy((void *)this->data, data, this->getSize(), cudaMemcpyHostToDevice));
         }
     }
 
+    // Allocate fresh buffer (for mutable scratch space)
+    WeightsVector(int m, int n, BackendType btype)
+        : m(m), n(n), btype(btype), owns_memory(true) {
+        if (btype == BackendType::CPU) {
+            this->data = new T[m * n]();
+        }
+        else if (btype == BackendType::GPU) {
+            CUDA_CHECK(cudaMalloc((void **)&this->data, this->getSize()));
+        }
+    }
+
     ~WeightsVector() {
-        if (btype == BackendType::GPU) {
-            CUDA_CHECK(cudaFree((void *)this->data));
+        if (owns_memory) {
+            if (btype == BackendType::GPU) {
+                CUDA_CHECK(cudaFree((void *)this->data));
+            } else {
+                delete[] this->data;
+            }
         }
     }
 
@@ -49,6 +67,13 @@ public:
         return data;
     }
 
+    T* getMutableData() {
+        return data;
+    }
+
+    operator T*() { return data; }
+    operator const T*() const { return data; }
+
     [[nodiscard]] DType getDType() const {
         if constexpr (std::is_same_v<T, float16_t>) {
             return DType::FP16;
@@ -62,10 +87,11 @@ public:
     }
 
 private:
-    const T *data;
+    T *data;
     int m;
     int n;
     BackendType btype;
+    bool owns_memory;
 };
 
 
