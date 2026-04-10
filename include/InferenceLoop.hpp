@@ -13,7 +13,7 @@ public:
     static std::atomic<bool> interrupt_requested;
 
     InferenceLoop(Config *config, std::unique_ptr<Tokenizer> tokenizer, Sampler *sampler,
-        std::variant<std::unique_ptr<Inference<float>>, std::unique_ptr<Inference<float16_t>>> inference_variant)
+        std::variant<std::unique_ptr<IInference<float>>, std::unique_ptr<IInference<float16_t>>> inference_variant)
         : config(config), sampler(sampler), tokenizer(std::move(tokenizer)),
           inference_variant(std::move(inference_variant)) {
         std::signal(SIGINT, InterruptHandler);
@@ -66,7 +66,7 @@ private:
     Config *config;
     Sampler *sampler;
     std::unique_ptr<Tokenizer> tokenizer;
-    std::variant<std::unique_ptr<Inference<float>>, std::unique_ptr<Inference<float16_t>>> inference_variant;
+    std::variant<std::unique_ptr<IInference<float>>, std::unique_ptr<IInference<float16_t>>> inference_variant;
 };
 
 #endif //LLM_CPP_INFERENCELOOP_HPP

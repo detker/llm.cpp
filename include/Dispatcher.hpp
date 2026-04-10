@@ -15,17 +15,17 @@
 
 
 struct InferenceDispatcher {
-    static InferenceLoop dispatch(Config *config, RunState *runState, DataUtils *dataUtils, std::unique_ptr<Tokenizer> tokenizer, Sampler *sampler) {
-        std::variant<std::unique_ptr<Inference<float>>, std::unique_ptr<Inference<float16_t>>> inference_variant;
+    static InferenceLoop dispatch(Config *config, IRunState *runState, DataUtils *dataUtils, std::unique_ptr<Tokenizer> tokenizer, Sampler *sampler) {
+        std::variant<std::unique_ptr<IInference<float>>, std::unique_ptr<IInference<float16_t>>> inference_variant;
 
         if (config->backend == BackendType::CPU) {
             std::cout << "Running inference on CPU..." << std::endl;
             if (config->dtype == DType::FP16) {
                 auto weights_ptr = dataUtils->mapModelWeights<float16_t>();
-                inference_variant = std::make_unique<Inference<float16_t>>(config, runState, std::move(weights_ptr));
+                inference_variant = std::make_unique<CPUInference<float16_t>>(config, runState, std::move(weights_ptr));
             } else {
                 auto weights_ptr = dataUtils->mapModelWeights<float>();
-                inference_variant = std::make_unique<Inference<float>>(config, runState, std::move(weights_ptr));
+                inference_variant = std::make_unique<CPUInference<float>>(config, runState, std::move(weights_ptr));
             }
         } else if (config->backend == BackendType::GPU) {
             ERR("GPU backend is not implemented yet");
@@ -78,12 +78,12 @@ struct InferenceLauncher
 {
     std::string prompt;
     Config *config;
-    RunState *runState;
+    IRunState *runState;
     std::unique_ptr<Tokenizer> tokenizer;
     DataUtils *dataUtils;
     Sampler *sampler;
 
-    InferenceLauncher(std::string prompt, Config *config, RunState *runState, DataUtils *dataUtils, std::unique_ptr<Tokenizer> tokenizer, Sampler *sampler)
+    InferenceLauncher(std::string prompt, Config *config, IRunState *runState, DataUtils *dataUtils, std::unique_ptr<Tokenizer> tokenizer, Sampler *sampler)
         : prompt{std::move(prompt)}, config{config}, runState{runState}, dataUtils{dataUtils}, tokenizer{std::move(tokenizer)}, sampler{sampler} {}
 
     template<int RuntimeD>
@@ -96,7 +96,7 @@ struct InferenceLauncher
 };
 
 template<int D>
-std::pair<float, int> RunInference(std::string prompt, Config *config, RunState *runState, DataUtils *dataUtils, std::unique_ptr<Tokenizer> tokenizer, Sampler *sampler)
+std::pair<float, int> RunInference(std::string prompt, Config *config, IRunState *runState, DataUtils *dataUtils, std::unique_ptr<Tokenizer> tokenizer, Sampler *sampler)
 {
     InferenceLauncher launcher{std::move(prompt), config, runState, dataUtils, std::move(tokenizer), sampler};
 

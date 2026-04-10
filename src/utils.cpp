@@ -1,7 +1,7 @@
 #include "utils.hpp"
 
 
-DataUtils::DataUtils(const MiscUtils::ParseResult &args): config() {
+DataUtils::DataUtils(const MiscUtils::ParseResult &args): config(), header_size(0) {
     if ((fd = open(args.model_path.c_str(), O_RDONLY)) == -1) {
         ERR("open error");
     }
@@ -47,40 +47,53 @@ Config DataUtils::getConfig() {
 
 template<FP1632 T>
 std::unique_ptr<TransformerWeightsAuto<T>> DataUtils::mapModelWeights() {
-    std::unique_ptr<TransformerWeightsAuto<T>> weights = std::make_unique<TransformerWeightsAuto<T>>();
+    auto weights = std::make_unique<TransformerWeightsAuto<T>>();
     char *weights_start = data + sizeof(uint64_t) + header_size;
 
     auto token_embd_table_offset = static_cast<size_t>(header["model.embed.weight"]["data_offsets"][0]);
-    weights->token_embd_table = reinterpret_cast<const T *>(weights_start + token_embd_table_offset);
+    auto token_embd_table_ptr = reinterpret_cast<const T *>(weights_start + token_embd_table_offset);
+    weights->token_embd_table = std::make_unique<WeightsVector<T>>(token_embd_table_ptr, config.vocab_size, config.dim, config.dtype, config.backend);
 
     auto final_norm_weight_offset = static_cast<size_t>(header["model.norm.weight"]["data_offsets"][0]);
-    weights->final_norm_weight = reinterpret_cast<const float *>(weights_start + final_norm_weight_offset);
+    auto final_norm_weight_ptr = reinterpret_cast<const float *>(weights_start + final_norm_weight_offset);
+    weights->final_norm_weight = std::make_unique<WeightsVector<float>>(final_norm_weight_ptr, 1, config.dim, DType::FP32, config.backend);
 
     auto output_proj_weight_offset = static_cast<size_t>(header["model.output.weight"]["data_offsets"][0]);
-    weights->output_proj_weight = reinterpret_cast<const T *>(weights_start + output_proj_weight_offset);
+    auto output_proj_weight_ptr = reinterpret_cast<const T *>(weights_start + output_proj_weight_offset);
+    weights->output_proj_weight = std::make_unique<WeightsVector<T>>(output_proj_weight_ptr, config.vocab_size, config.dim, config.dtype, config.backend);
 
     weights->layer_weights = std::make_unique<LayerWeightsAuto<T>[]>(config.n_layers);
+    const int kv_dim = (config.dim / config.n_heads) * config.n_kv_heads;
     for (int i = 0; i < config.n_layers; ++i) {
         auto &layer = weights->layer_weights[i];
         std::string prefix = "model.layers." + std::to_string(i) + ".";
         auto norm_att_weight_offset = static_cast<size_t>(header[prefix + "attn.norm.weight"]["data_offsets"][0]);
-        layer.norm_att_weight = reinterpret_cast<const float *>(weights_start + norm_att_weight_offset);
+        auto norm_att_weight_ptr = reinterpret_cast<const float *>(weights_start + norm_att_weight_offset);
+        layer.norm_att_weight = std::make_unique<WeightsVector<float>>(norm_att_weight_ptr, 1, config.dim, DType::FP32, config.backend);
         auto wk_att_weight_offset = static_cast<size_t>(header[prefix + "attn.wk.weight"]["data_offsets"][0]);
-        layer.k_proj_weight = reinterpret_cast<const T *>(weights_start + wk_att_weight_offset);
+        auto wk_att_weight_ptr = reinterpret_cast<const T *>(weights_start + wk_att_weight_offset);
+        layer.k_proj_weight = std::make_unique<WeightsVector<T>>(wk_att_weight_ptr, kv_dim, config.dim, config.dtype, config.backend);
         auto wo_att_weight_offset = static_cast<size_t>(header[prefix + "attn.wo.weight"]["data_offsets"][0]);
-        layer.o_proj_weight = reinterpret_cast<const T *>(weights_start + wo_att_weight_offset);
+        auto wo_att_weight_ptr = reinterpret_cast<const T *>(weights_start + wo_att_weight_offset);
+        layer.o_proj_weight = std::make_unique<WeightsVector<T>>(wo_att_weight_ptr, config.dim, config.dim, config.dtype, config.backend);
         auto wq_att_weight_offset = static_cast<size_t>(header[prefix + "attn.wq.weight"]["data_offsets"][0]);
-        layer.q_proj_weight = reinterpret_cast<const T *>(weights_start + wq_att_weight_offset);
+        auto wq_att_weight_ptr = reinterpret_cast<const T *>(weights_start + wq_att_weight_offset);
+        layer.q_proj_weight = std::make_unique<WeightsVector<T>>(wq_att_weight_ptr, config.dim, config.dim, config.dtype, config.backend);
         auto wv_att_weight_offset = static_cast<size_t>(header[prefix + "attn.wv.weight"]["data_offsets"][0]);
-        layer.v_proj_weight = reinterpret_cast<const T *>(weights_start + wv_att_weight_offset);
+        auto wv_att_weight_ptr = reinterpret_cast<const T *>(weights_start + wv_att_weight_offset);
+        layer.v_proj_weight = std::make_unique<WeightsVector<T>>(wv_att_weight_ptr, kv_dim, config.dim, config.dtype, config.backend);
         auto mlp_w1_weight_offset = static_cast<size_t>(header[prefix + "mlp.w1.weight"]["data_offsets"][0]);
-        layer.mlp_w1_weight = reinterpret_cast<const T *>(weights_start + mlp_w1_weight_offset);
+        auto mlp_w1_weight_ptr = reinterpret_cast<const T *>(weights_start + mlp_w1_weight_offset);
+        layer.mlp_w1_weight = std::make_unique<WeightsVector<T>>(mlp_w1_weight_ptr, config.hidden_dim, config.dim, config.dtype, config.backend);
         auto mlp_w2_weight_offset = static_cast<size_t>(header[prefix + "mlp.w2.weight"]["data_offsets"][0]);
-        layer.mlp_w2_weight = reinterpret_cast<const T *>(weights_start + mlp_w2_weight_offset);
+        auto mlp_w2_weight_ptr = reinterpret_cast<const T *>(weights_start + mlp_w2_weight_offset);
+        layer.mlp_w2_weight = std::make_unique<WeightsVector<T>>(mlp_w2_weight_ptr, config.dim, config.hidden_dim, config.dtype, config.backend);
         auto mlp_w3_weight_offset = static_cast<size_t>(header[prefix + "mlp.w3.weight"]["data_offsets"][0]);
-        layer.mlp_w3_weight = reinterpret_cast<const T *>(weights_start + mlp_w3_weight_offset);
+        auto mlp_w3_weight_ptr = reinterpret_cast<const T *>(weights_start + mlp_w3_weight_offset);
+        layer.mlp_w3_weight = std::make_unique<WeightsVector<T>>(mlp_w3_weight_ptr, config.hidden_dim, config.dim, config.dtype, config.backend);
         auto mlp_norm_weight_offset = static_cast<size_t>(header[prefix + "mlp.norm.weight"]["data_offsets"][0]);
-        layer.mlp_norm_weight = reinterpret_cast<const float *>(weights_start + mlp_norm_weight_offset);
+        auto mlp_norm_weight_ptr = reinterpret_cast<const float *>(weights_start + mlp_norm_weight_offset);
+        layer.mlp_norm_weight = std::make_unique<WeightsVector<float>>(mlp_norm_weight_ptr, 1, config.dim, DType::FP32, config.backend);
     }
 
     return weights;

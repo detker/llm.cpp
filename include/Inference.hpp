@@ -29,24 +29,43 @@ inline f16_t float_to_half(float x) {
 }
 #endif
 
-template<FP1632 T>
-class Inference {
+template <FP1632 T>
+class IInference {
 public:
-    Inference(Config *config, RunState *runState, std::unique_ptr<TransformerWeightsAuto<T>> weights);
-    ~Inference() = default;
+    IInference(Config *config, IRunState *runState, std::unique_ptr<TransformerWeightsAuto<T>> weights);
+    virtual ~IInference() = default;
 
-    void forward(int token, int pos);
-    RunState *runState;
-private:
+    virtual void forward(int token, int pos) = 0;
+    IRunState *runState;
+protected:
     Config *config;
 
     std::unique_ptr<TransformerWeightsAuto<T>> weights;
 
-    void layer_forward(int layer_id, int pos);
-    void RoPE(int pos);
-    void UpdateKVCache(int layer_id, int pos);
+    virtual void layer_forward(int layer_id, int pos) = 0;
+    virtual void RoPE(int pos) = 0;
+    virtual void UpdateKVCache(int layer_id, int pos) = 0;
 
-    void matmul(float *xout, float *x, const T *w, int n, int d) {
+    virtual void matmul(float *xout, float *x, const T *w, int n, int d) = 0;
+};
+
+template<FP1632 T>
+class CPUInference : public IInference<T> {
+public:
+    CPUInference(Config *config, IRunState *runState, std::unique_ptr<TransformerWeightsAuto<T>> weights);
+    ~CPUInference() override = default;
+
+    void forward(int token, int pos) override;
+private:
+    using IInference<T>::config;
+    using IInference<T>::runState;
+    using IInference<T>::weights;
+
+    void layer_forward(int layer_id, int pos) override;
+    void RoPE(int pos) override;
+    void UpdateKVCache(int layer_id, int pos) override;
+
+    void matmul(float *xout, float *x, const T *w, int n, int d) override {
         if constexpr (std::same_as<T, float>) {
             MathUtils::matmul(xout, x, w, n, d);
         } else {
