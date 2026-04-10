@@ -28,7 +28,14 @@ struct InferenceDispatcher {
                 inference_variant = std::make_unique<CPUInference<float>>(config, runState, std::move(weights_ptr));
             }
         } else if (config->backend == BackendType::GPU) {
-            ERR("GPU backend is not implemented yet");
+            std::cout << "Running inference on GPU..." << std::endl;
+            if (config->dtype == DType::FP16) {
+                auto weights_ptr = dataUtils->mapModelWeights<float16_t>();
+                inference_variant = std::make_unique<GPUInference<float16_t>>(config, runState, std::move(weights_ptr));
+            } else {
+                auto weights_ptr = dataUtils->mapModelWeights<float>();
+                inference_variant = std::make_unique<GPUInference<float>>(config, runState, std::move(weights_ptr));
+            }
         } else {
             ERR("Unsupported backend");
         }

@@ -28,8 +28,9 @@ public:
         timerManager.SetTimer(config->backend == BackendType::GPU ? static_cast<Timer*>(&timerGpu) : static_cast<Timer*>(&timerCpu));
 
         std::vector<int> input_tokens_ids = tokenizer->encode(prompt, config->max_seq_len);
+        float *logits = nullptr;
         for (uint i = 0; i < input_tokens_ids.size(); i++) {
-            std::visit([&](auto& inf) { inf->forward(input_tokens_ids[i], i); }, inference_variant);
+            logits = std::visit([&](auto& inf) { return inf->forward(input_tokens_ids[i], i); }, inference_variant);
         }
 
         timerManager.Start();
@@ -39,7 +40,7 @@ public:
                 break;
             }
 
-            int next_token = std::visit([this](auto& inf) {return sampler->sample_temperature(inf->runState->logits, config->vocab_size, config->temperature);}, inference_variant);
+            int next_token = sampler->sample_temperature(logits, config->vocab_size, config->temperature);
             if (next_token == config->eos_token_id) {
                 std::cout << "End of sequence generated." << std::endl;
                 break;
@@ -50,7 +51,7 @@ public:
             printf("%s", next_token_str.c_str());
             fflush(stdout);
 
-            std::visit([&](auto& inf) { inf->forward(next_token, i); }, inference_variant);
+            logits = std::visit([&](auto& inf) { return inf->forward(next_token, i); }, inference_variant);
             tokens_generated++;
         }
         timerManager.Stop();

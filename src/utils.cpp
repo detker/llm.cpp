@@ -95,7 +95,6 @@ std::unique_ptr<TransformerWeightsAuto<T>> DataUtils::mapModelWeights() {
         auto mlp_norm_weight_ptr = reinterpret_cast<const float *>(weights_start + mlp_norm_weight_offset);
         layer.mlp_norm_weight = std::make_unique<WeightsVector<float>>(mlp_norm_weight_ptr, 1, config.dim, DType::FP32, config.backend);
     }
-
     return weights;
 }
 

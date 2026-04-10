@@ -3,10 +3,6 @@
 
 
 template<FP1632 T>
-IInference<T>::IInference(Config *config, RunState *runState, std::unique_ptr<TransformerWeightsAuto<T>> weights)
-    : runState(runState), config(config), weights(std::move(weights)) {}
-
-template<FP1632 T>
 CPUInference<T>::CPUInference(Config *config, RunState *runState, std::unique_ptr<TransformerWeightsAuto<T>> weights)
     : IInference<T>(config, runState, std::move(weights)) { }
 
@@ -126,7 +122,7 @@ void CPUInference<T>::layer_forward(int layer_id, int pos) {
 }
 
 template<FP1632 T>
-void CPUInference<T>::forward(int token, int pos) {
+float* CPUInference<T>::forward(int token, int pos) {
     // 1. input embedding
     auto embd_vec = weights->token_embd_table->getData() + token * config->dim;
 
@@ -148,6 +144,8 @@ void CPUInference<T>::forward(int token, int pos) {
 
     // 4. final out projection
     this->matmul(this->runState->logits, this->runState->xb, this->weights->output_proj_weight->getData(), this->config->dim, this->config->vocab_size);
+
+    return this->runState->logits.getMutableData();
 }
 
 template class CPUInference<float>;

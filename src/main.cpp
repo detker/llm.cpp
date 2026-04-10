@@ -23,6 +23,7 @@ int main(int argc, char **argv) {
     MiscUtils::ParseResult args = MiscUtils::parseArgs(argc, argv);
     DataUtils dataUtils(args);
     Config config = dataUtils.getConfig();
+    config.max_seq_len = 2048; // for debug (to fit into VRAM :p)
     std::unique_ptr<Tokenizer> tokenizer = dataUtils.getTokenizer();
     RunState runState(&config);
     Sampler sampler(rng);

@@ -1,6 +1,7 @@
 #ifndef LLM_CPP_TRANSFORMERWEIGHTS_HPP
 #define LLM_CPP_TRANSFORMERWEIGHTS_HPP
 
+#include <iostream>
 #include <concepts>
 #include <memory>
 #include <cuda_runtime.h>
@@ -18,7 +19,6 @@ public:
     WeightsVector(const WeightsVector&) = delete;
     WeightsVector& operator=(const WeightsVector&) = delete;
 
-    // Wrap existing data (CPU = zero-copy, GPU = copy to device)
     WeightsVector(const T *data, int m, int n, DType dtype, BackendType btype)
         : m(m), n(n), btype(btype), owns_memory(btype == BackendType::GPU) {
         if (btype == BackendType::CPU) {
@@ -30,7 +30,6 @@ public:
         }
     }
 
-    // Allocate fresh buffer (for mutable scratch space)
     WeightsVector(int m, int n, BackendType btype)
         : m(m), n(n), btype(btype), owns_memory(true) {
         if (btype == BackendType::CPU) {

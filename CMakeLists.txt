@@ -11,7 +11,7 @@ endif()
 project(llm_cpp LANGUAGES CXX CUDA)
 
 set(CMAKE_CXX_STANDARD 20)
-set(CMAKE_CUDA_STANDARD 17)
+set(CMAKE_CUDA_STANDARD 20)
 set(CMAKE_CUDA_STANDARD_REQUIRED ON)
 
 find_package(OpenMP REQUIRED)
@@ -38,7 +38,8 @@ add_executable(llm_cpp src/main.cpp
         src/utils.cpp
         src/RunState.cpp
         include/Inference.hpp
-        src/Inference.cpp
+        src/CPUInference.cpp
+        src/GPUInference.cu
         include/Sampler.hpp
         src/Sampler.cpp
         include/Tokenizer.hpp
@@ -46,6 +47,8 @@ add_executable(llm_cpp src/main.cpp
         include/Timer.hpp
         include/Dispatcher.hpp
         include/InferenceLoop.hpp
+        include/cu.cuh
+        src/cu.cu
 )
 
 if(NOT CMAKE_CUDA_ARCHITECTURES)
