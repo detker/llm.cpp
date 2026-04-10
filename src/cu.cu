@@ -168,7 +168,6 @@ __global__ void attention_kernel(
     __syncthreads();
 
     float *xb_head = xb + head_id * head_dim;
-    //TODO: before kernel execution memset to 0 xb
     float out_val = 0.0f;
     for (int t = 0; t <= pos; ++t) {
         float v_val = value_cache[t * kv_dim + kv_head_id * head_dim + dim_id];
