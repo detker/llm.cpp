@@ -6,7 +6,7 @@
 namespace cu
 {
     extern "C"
-    void matmul_host_fp32(float *xout, float *x, const float *w, int n, int d);
+    void matmul_host_fp32(float *xout, float *x, const float *w, int d, int n);
 
     extern "C"
     void rmsnorm_host_fp32(float *xout, const float *x, const float *weight, int d, float eps);

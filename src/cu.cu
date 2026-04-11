@@ -4,14 +4,30 @@
 #include "errorUtils.hpp"
 
 
+// each warp computes one output element
+// coalesced W reads (consecutive lanes read consecutive columns)
+// warp shuffle reduction
+template<int WARPS_PER_BLOCK>
 __global__ void matmul_kernel_fp32(float *xout, const float *x, const float *w, int n, int d) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx < d) {
-        float sum = 0.0f;
-        for (int i = 0; i < n; ++i) {
-            sum += w[idx * n + i] * x[i];
-        }
-        xout[idx] = sum;
+    int warp_id = threadIdx.x / 32;
+    int lane_id = threadIdx.x % 32;
+    int row = blockIdx.x * WARPS_PER_BLOCK + warp_id;
+    if (row >= n) return;
+
+    const float *w_row = w + row * d;
+    float sum = 0.0f;
+
+    for (int col = lane_id; col < d; col += 32) {
+        sum += w_row[col] * x[col];
+    }
+
+    // warp-level reduction
+    for (int offset = 16; offset > 0; offset >>= 1) {
+        sum += __shfl_down_sync(0xffffffff, sum, offset);
+    }
+
+    if (lane_id == 0) {
+        xout[row] = sum;
     }
 }
 
@@ -178,14 +194,14 @@ __global__ void attention_kernel(
 }
 
 extern "C"
-void cu::matmul_host_fp32(float *xout, float *x, const float *w, int n, int d) {
+void cu::matmul_host_fp32(float *xout, float *x, const float *w, int d, int n) {
     // xout, x, w are already on device
-    // w (d, n) @ x (n,) -> xout (d,)
-    const size_t BLOCK_SIZE = 256;
-    const size_t GRID_SIZE = (d + BLOCK_SIZE - 1) / BLOCK_SIZE;
-    const size_t SHM_SIZE = BLOCK_SIZE * sizeof(float);
+    // w (n, d) @ x (d,) -> xout (n,)
+    constexpr int WARPS_PER_BLOCK = 4;
+    const int GRID = (n + WARPS_PER_BLOCK - 1) / WARPS_PER_BLOCK;
+    const int BLOCK = 32 * WARPS_PER_BLOCK;
 
-    matmul_kernel_fp32<<<GRID_SIZE, BLOCK_SIZE, SHM_SIZE>>>(xout, x, w, n, d);
+    matmul_kernel_fp32<WARPS_PER_BLOCK><<<GRID, BLOCK>>>(xout, x, w, n, d);
     CUDA_CHECK(cudaGetLastError());
     CUDA_CHECK(cudaDeviceSynchronize());
 }
