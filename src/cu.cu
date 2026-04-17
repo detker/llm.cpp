@@ -4,20 +4,22 @@
 #include "errorUtils.hpp"
 
 
-// each warp computes one output element
-// coalesced W reads (consecutive lanes read consecutive columns)
-// warp shuffle reduction
 template<int WARPS_PER_BLOCK>
 __global__ void matmul_kernel_fp32(float *xout, const float *x, const float *w, int n, int d) {
+    extern __shared__ unsigned char shm[];
+    float *warp_sums_shm = (float*)shm;
+    // [0, 1, ..., WARPS_PER_BLOCK-1]
+
     int warp_id = threadIdx.x / 32;
     int lane_id = threadIdx.x % 32;
-    int row = blockIdx.x * WARPS_PER_BLOCK + warp_id;
+    int row = blockIdx.x;
+
     if (row >= n) return;
 
     const float *w_row = w + row * d;
     float sum = 0.0f;
 
-    for (int col = lane_id; col < d; col += 32) {
+    for (int col = threadIdx.x; col < d; col += blockDim.x) {
         sum += w_row[col] * x[col];
     }
 
@@ -26,7 +28,18 @@ __global__ void matmul_kernel_fp32(float *xout, const float *x, const float *w, 
         sum += __shfl_down_sync(0xffffffff, sum, offset);
     }
 
-    if (lane_id == 0) {
+    warp_sums_shm[warp_id] = sum; // store warp sum in shared memory
+    __syncthreads();
+
+    sum = (threadIdx.x < WARPS_PER_BLOCK) ? warp_sums_shm[threadIdx.x] : 0.0f;
+
+    if (threadIdx.x < 32) {
+        for (int offset = 16; offset > 0; offset >>= 1) {
+            sum += __shfl_down_sync(0xffffffff, sum, offset);
+        }
+    }
+
+    if (threadIdx.x == 0) {
         xout[row] = sum;
     }
 }
@@ -197,11 +210,12 @@ extern "C"
 void cu::matmul_host_fp32(float *xout, float *x, const float *w, int d, int n) {
     // xout, x, w are already on device
     // w (n, d) @ x (d,) -> xout (n,)
-    constexpr int WARPS_PER_BLOCK = 4;
-    const int GRID = (n + WARPS_PER_BLOCK - 1) / WARPS_PER_BLOCK;
+    constexpr int WARPS_PER_BLOCK = 16;
+    const int GRID = n;
     const int BLOCK = 32 * WARPS_PER_BLOCK;
+    const int SHM_SIZE = sizeof(float) * WARPS_PER_BLOCK;
 
-    matmul_kernel_fp32<WARPS_PER_BLOCK><<<GRID, BLOCK>>>(xout, x, w, n, d);
+    matmul_kernel_fp32<WARPS_PER_BLOCK><<<GRID, BLOCK, SHM_SIZE>>>(xout, x, w, n, d);
     CUDA_CHECK(cudaGetLastError());
     CUDA_CHECK(cudaDeviceSynchronize());
 }

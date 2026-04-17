@@ -41,7 +41,7 @@ public:
             }
 
             int next_token = sampler->sample_temperature(logits, config->vocab_size, config->temperature);
-            if (next_token == config->eos_token_id) {
+            if (next_token == config->eos_token_id || tokens_generated >= config->max_seq_len) {
                 std::cout << "End of sequence generated." << std::endl;
                 break;
             }
