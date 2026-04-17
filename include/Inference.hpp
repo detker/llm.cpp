@@ -112,6 +112,22 @@ private:
         }
     }
 
+    void fused_matmul_residuals(float *xout, const float *x, const T *w, int n, int d) {
+        if constexpr (std::same_as<T, float>) {
+            cu::fused_matmul_add_residual_host_fp32(xout, x, w, n, d);
+        } else {
+            ERR("FP16 fused matmul + residuals not implemented yet.");
+        }
+    }
+
+    void fused_matmul_silu(float *xout, const float *x, const T *w1, const T *w2, int n, int d) {
+        if constexpr (std::same_as<T, float>) {
+            cu::fused_ff1ff3matmul_silu_host_fp32(xout, x, w1, w2, n, d);
+        } else {
+            ERR("FP16 fused matmul + silu not implemented yet.");
+        }
+    }
+
     void rmsnorm(float *xout, float *x, const float *w, int d, float eps) {
         if constexpr (std::same_as<T, float>) {
             cu::rmsnorm_host_fp32(xout, x, w, d, eps);

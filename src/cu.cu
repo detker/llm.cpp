@@ -88,7 +88,94 @@ __global__ void matmul_kernel_fp32(float *xout, const float *x, const float *w, 
 
     if (lane_id == 0) warp_sums_shm[warp_id] = sum; // store warp sum in shared memory
     __syncthreads();
-    if (lane_id < WARPS_PER_BLOCK) {
+    if (warp_id == 0 && lane_id < WARPS_PER_BLOCK) {
+        xout[blockIdx.x*WARPS_PER_BLOCK + lane_id] = warp_sums_shm[lane_id];
+    }
+}
+
+template<int WARPS_PER_BLOCK>
+__global__ void fused_matmul_kernel_add_residual_fp32(float *xout, const float *x, const float *w, int n, int d) {
+    extern __shared__ unsigned char shm[];
+    float *warp_sums_shm = (float*)shm;
+
+    int warp_id = threadIdx.x / 32;
+    int lane_id = threadIdx.x % 32;
+    int row = blockIdx.x * WARPS_PER_BLOCK + warp_id;
+
+    if (row >= n) return;
+
+    const float *w_row = w + row * d;
+    float sum = 0.0f;
+
+    int f4d = d / 4;
+    const float4 *w_row_f4 = reinterpret_cast<const float4*>(w_row);
+    const float4 *x_f4 = reinterpret_cast<const float4*>(x);
+    for (int col = lane_id; col < f4d; col += 32) {
+        float4 w4 = w_row_f4[col];
+        float4 x4 = x_f4[col];
+
+        sum += (w4.x * x4.x +
+                w4.y * x4.y +
+                w4.z * x4.z +
+                w4.w * x4.w);
+    }
+
+    for (int offset = 16; offset > 0; offset >>= 1) {
+        sum += __shfl_down_sync(0xffffffff, sum, offset);
+    }
+
+    if (lane_id == 0) warp_sums_shm[warp_id] = sum;
+    __syncthreads();
+    int row_t = blockIdx.x * WARPS_PER_BLOCK + lane_id;
+    if (warp_id == 0 && lane_id < WARPS_PER_BLOCK) {
+        xout[row_t] += warp_sums_shm[lane_id]; // residual connection
+    }
+}
+
+template<int WARPS_PER_BLOCK>
+__global__ void fused_ff1ff3matmul_silu_kernel_fp32(float *xout, const float *x, const float *w1, const float *w2, int n, int d) {
+    extern __shared__ unsigned char shm[];
+    float *warp_sums_shm = (float*)shm;
+
+    int warp_id = threadIdx.x / 32;
+    int lane_id = threadIdx.x % 32;
+    int row = blockIdx.x * WARPS_PER_BLOCK + warp_id;
+
+    if (row >= n) return;
+
+    const float *w1_row = w1 + row * d;
+    const float *w2_row = w2 + row * d;
+    float sum_1 = 0.0f, sum_2 = 0.0f;
+
+    int f4d = d / 4;
+    const float4 *w1_row_f4 = reinterpret_cast<const float4*>(w1_row);
+    const float4 *w2_row_f4 = reinterpret_cast<const float4*>(w2_row);
+    const float4 *x_f4 = reinterpret_cast<const float4*>(x);
+    for (int col = lane_id; col < f4d; col += 32) {
+        float4 w1_4 = w1_row_f4[col];
+        float4 w2_4 = w2_row_f4[col];
+        float4 x4 = x_f4[col];
+
+        sum_1 += (w1_4.x * x4.x +
+                  w1_4.y * x4.y +
+                  w1_4.z * x4.z +
+                  w1_4.w * x4.w);
+
+        sum_2 += (w2_4.x * x4.x +
+                  w2_4.y * x4.y +
+                  w2_4.z * x4.z +
+                  w2_4.w * x4.w);
+    }
+
+    for (int offset = 16; offset > 0; offset >>= 1) {
+        sum_1 += __shfl_down_sync(0xffffffff, sum_1, offset);
+        sum_2 += __shfl_down_sync(0xffffffff, sum_2, offset);
+    }
+
+    if (lane_id == 0) warp_sums_shm[warp_id] = (sum_1 / (1.0f + __expf(-sum_1))) * sum_2; // silu applied
+    __syncthreads();
+
+    if (warp_id == 0 && lane_id < WARPS_PER_BLOCK) {
         xout[blockIdx.x*WARPS_PER_BLOCK + lane_id] = warp_sums_shm[lane_id];
     }
 }
@@ -293,7 +380,6 @@ void cu::matmul_host_fp32_hidim(float *xout, float *x, const float *w, int d, in
     // w (n, d) @ x (d,) -> xout (n,)
     constexpr int WARPS_PER_BLOCK = 16;
     const int GRID = n;
-    // const int GRID = (n + WARPS_PER_BLOCK - 1) / WARPS_PER_BLOCK;
     const int BLOCK = 32 * WARPS_PER_BLOCK;
     const int SHM_SIZE = sizeof(float) * WARPS_PER_BLOCK;
 
@@ -307,7 +393,6 @@ void cu::matmul_host_fp32(float *xout, float *x, const float *w, int d, int n) {
     // xout, x, w are already on device
     // w (n, d) @ x (d,) -> xout (n,)
     constexpr int WARPS_PER_BLOCK = 16;
-    // const int GRID = n;
     const int GRID = (n + WARPS_PER_BLOCK - 1) / WARPS_PER_BLOCK;
     const int BLOCK = 32 * WARPS_PER_BLOCK;
     const int SHM_SIZE = sizeof(float) * WARPS_PER_BLOCK;
@@ -318,11 +403,33 @@ void cu::matmul_host_fp32(float *xout, float *x, const float *w, int d, int n) {
 }
 
 extern "C"
+void cu::fused_matmul_add_residual_host_fp32(float *xout, const float *x, const float *w, int d, int n) {
+    constexpr int WARPS_PER_BLOCK = 16;
+    const int GRID = (n + WARPS_PER_BLOCK - 1) / WARPS_PER_BLOCK;
+    const int BLOCK = 32 * WARPS_PER_BLOCK;
+    const int SHM_SIZE = sizeof(float) * WARPS_PER_BLOCK;
+
+    fused_matmul_kernel_add_residual_fp32<WARPS_PER_BLOCK><<<GRID, BLOCK, SHM_SIZE>>>(xout, x, w, n, d);
+    CUDA_CHECK(cudaGetLastError());
+    CUDA_CHECK(cudaDeviceSynchronize());
+}
+
+extern "C"
+void cu::fused_ff1ff3matmul_silu_host_fp32(float *xout, const float *x, const float *w1, const float *w2, int d, int n) {
+    constexpr int WARPS_PER_BLOCK = 16;
+    const int GRID = (n + WARPS_PER_BLOCK - 1) / WARPS_PER_BLOCK;
+    const int BLOCK = 32 * WARPS_PER_BLOCK;
+    const int SHM_SIZE = sizeof(float) * WARPS_PER_BLOCK;
+
+    fused_ff1ff3matmul_silu_kernel_fp32<WARPS_PER_BLOCK><<<GRID, BLOCK, SHM_SIZE>>>(xout, x, w1, w2, n, d);
+    CUDA_CHECK(cudaGetLastError());
+    CUDA_CHECK(cudaDeviceSynchronize());
+}
+
+extern "C"
 void rmsnorm_host_fp32(float *xout, const float *x, const float *weight, int d, float eps) {
     const size_t WARPS_PER_BLOCK = 16;
     const size_t BLOCK_SIZE = WARPS_PER_BLOCK * 32;
-    // const size_t GRID_SIZE = (d + BLOCK_SIZE - 1) / BLOCK_SIZE;
-    // const size_t SHM_SIZE = BLOCK_SIZE * sizeof(float);
     const size_t SHM_SIZE = sizeof(float) * WARPS_PER_BLOCK;
 
     rmsnorm_kernel_fp32<WARPS_PER_BLOCK><<<1, BLOCK_SIZE, SHM_SIZE>>>(xout, x, weight, d, eps);

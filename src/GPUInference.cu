@@ -20,9 +20,8 @@ void GPUInference<T>::layer_forward(int layer_id, int pos) {
     // 1. attn norm
     this->rmsnorm(runState->xb, runState->x, layer_weights.norm_att_weight->getData(), config->dim, config->norm_eps);
 
-    int kv_dim = (config->dim / config->n_heads) * config->n_kv_heads;
-
     // 2. qkv projection
+    int kv_dim = (config->dim / config->n_heads) * config->n_kv_heads;
     this->matmul(runState->q, runState->xb, layer_weights.q_proj_weight->getData(), config->dim, config->dim);
     this->matmul(runState->k, runState->xb, layer_weights.k_proj_weight->getData(), config->dim, kv_dim);
     this->matmul(runState->v, runState->xb, layer_weights.v_proj_weight->getData(), config->dim, kv_dim);
@@ -39,24 +38,15 @@ void GPUInference<T>::layer_forward(int layer_id, int pos) {
         runState->value_cache + layer_id * config->max_seq_len * kv_dim, runState->att, runState->xb,
         pos, config->head_dim, kv_dim, config->max_seq_len, kv_mul, config->n_heads);
 
-    // 6. attention output projection
-    // xb_head (d,) @ o_proj (d,d)
-    this->matmul(runState->xb2, runState->xb, layer_weights.o_proj_weight->getData(), config->dim, config->dim);
-
-    cu::residual_host(runState->x, runState->xb2, config->dim);
+    // 6. attention output projection + residual
+    this->fused_matmul_residuals(runState->x, runState->xb, layer_weights.o_proj_weight->getData(), config->dim, config->dim);
 
     // 7. FFN
     this->rmsnorm(runState->xb, runState->x, layer_weights.mlp_norm_weight->getData(), config->dim, config->norm_eps);
+    this->fused_matmul_silu(runState->hb, runState->xb, layer_weights.mlp_w1_weight->getData(), layer_weights.mlp_w3_weight->getData(), config->dim, config->hidden_dim);
 
-    this->matmul(runState->hb, runState->xb, layer_weights.mlp_w1_weight->getData(), config->dim, config->hidden_dim);
-    this->matmul(runState->hb2, runState->xb, layer_weights.mlp_w3_weight->getData(), config->dim, config->hidden_dim);
-    cu::silu_host(runState->hb, runState->hb2, config->hidden_dim);
-    // this op implemented in above silu kernel
-    //     runState->hb[i] *= runState->hb2[i];
-
-    this->matmul(runState->xb2, runState->hb, layer_weights.mlp_w2_weight->getData(), config->hidden_dim, config->dim);
-
-    cu::residual_host(runState->x, runState->xb2, config->dim);
+    // 8. FFN output projection + residual
+    this->fused_matmul_residuals(runState->x, runState->hb, layer_weights.mlp_w2_weight->getData(), config->hidden_dim, config->dim);
 }
 
 template<FP1632 T>
