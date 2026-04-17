@@ -6,6 +6,9 @@
 namespace cu
 {
     extern "C"
+    void matmul_host_fp32_hidim(float *xout, float *x, const float *w, int d, int n);
+
+    extern "C"
     void matmul_host_fp32(float *xout, float *x, const float *w, int d, int n);
 
     extern "C"

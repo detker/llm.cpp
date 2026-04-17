@@ -104,7 +104,9 @@ private:
 
     void matmul(float *xout, float *x, const T *w, int n, int d) override {
         if constexpr (std::same_as<T, float>) {
-            cu::matmul_host_fp32(xout, x, w, n, d);
+            auto v = std::min(n,d);
+            if (d*n > v*v) cu::matmul_host_fp32_hidim(xout, x, w, n, d);
+            else cu::matmul_host_fp32(xout, x, w, n, d);
         } else {
             ERR("FP16 matmul not implemented yet.");
         }
