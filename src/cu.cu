@@ -19,8 +19,17 @@ __global__ void matmul_kernel_fp32(float *xout, const float *x, const float *w, 
     const float *w_row = w + row * d;
     float sum = 0.0f;
 
-    for (int col = threadIdx.x; col < d; col += blockDim.x) {
-        sum += w_row[col] * x[col];
+    int f4d = d / 4;
+    const float4 *w_row_f4 = reinterpret_cast<const float4*>(w_row);
+    const float4 *x_f4 = reinterpret_cast<const float4*>(x);
+    for (int col = threadIdx.x; col < f4d; col += blockDim.x) {
+        float4 w4 = w_row_f4[col];
+        float4 x4 = x_f4[col];
+
+        sum += (w4.x * x4.x +
+                w4.y * x4.y +
+                w4.z * x4.z +
+                w4.w * x4.w);
     }
 
     // warp-level reduction
