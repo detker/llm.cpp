@@ -181,6 +181,73 @@ __global__ void fused_ff1ff3matmul_silu_kernel_fp32(float *xout, const float *x,
 }
 
 template <int WARPS_PER_BLOCK>
+__global__ void fused_qkv_matmuls_kernel_fp32(float *q, float *k, float *v,
+                                              const float *x, const float *wq,
+                                              const float *wk, const float *wv,
+                                              int dim, int kv_dim) {
+    extern __shared__ float shm_sums[];
+    float *warp_sums_q_shm = shm_sums;
+    float *warp_sums_k_shm = shm_sums + WARPS_PER_BLOCK;
+    float *warp_sums_v_shm = shm_sums + WARPS_PER_BLOCK * 2;
+
+    int warp_id = threadIdx.x / 32;
+    int lane_id = threadIdx.x % 32;
+    int row = blockIdx.x * WARPS_PER_BLOCK + warp_id;
+
+    float sum_q = 0.0f, sum_k = 0.0f, sum_v = 0.0f;
+
+    if (row < dim) {
+        int f4d = dim / 4;
+        const float4 *wq_row_f4 = reinterpret_cast<const float4*>(wq + row * dim);
+        const float4 *wk_row_f4 = (row < kv_dim) ? reinterpret_cast<const float4*>(wk + row * dim) : nullptr;
+        const float4 *wv_row_f4 = (row < kv_dim) ? reinterpret_cast<const float4*>(wv + row * dim) : nullptr;
+
+        const float4 *x_f4 = reinterpret_cast<const float4*>(x);
+
+        for (int col = lane_id; col < f4d; col += 32) {
+            float4 x4 = x_f4[col];
+            float4 wq_4 = wq_row_f4[col];
+
+            sum_q += (wq_4.x * x4.x + wq_4.y * x4.y + wq_4.z * x4.z + wq_4.w * x4.w);
+
+            if (row < kv_dim) {
+                float4 wk_4 = wk_row_f4[col];
+                float4 wv_4 = wv_row_f4[col];
+                sum_k += (wk_4.x * x4.x + wk_4.y * x4.y + wk_4.z * x4.z + wk_4.w * x4.w);
+                sum_v += (wv_4.x * x4.x + wv_4.y * x4.y + wv_4.z * x4.z + wv_4.w * x4.w);
+            }
+        }
+
+        #pragma unroll
+        for (int offset = 16; offset > 0; offset >>= 1) {
+            sum_q += __shfl_down_sync(0xffffffff, sum_q, offset);
+            sum_k += __shfl_down_sync(0xffffffff, sum_k, offset);
+            sum_v += __shfl_down_sync(0xffffffff, sum_v, offset);
+        }
+
+        if (lane_id == 0) {
+            warp_sums_q_shm[warp_id] = sum_q;
+            if (row < kv_dim) {
+                warp_sums_k_shm[warp_id] = sum_k;
+                warp_sums_v_shm[warp_id] = sum_v;
+            }
+        }
+    }
+    __syncthreads();
+
+    if (warp_id == 0 && lane_id < WARPS_PER_BLOCK) {
+        int out_row = blockIdx.x * WARPS_PER_BLOCK + lane_id;
+        if (out_row < dim) {
+            q[out_row] = warp_sums_q_shm[lane_id];
+            if (out_row < kv_dim) {
+                k[out_row] = warp_sums_k_shm[lane_id];
+                v[out_row] = warp_sums_v_shm[lane_id];
+            }
+        }
+    }
+}
+
+template <int WARPS_PER_BLOCK>
 __global__ void rmsnorm_kernel_fp32(float *xout, const float *x, const float *weight, int d, float eps) {
     extern __shared__ unsigned char shm[];
     float *warp_sums_shm = (float*)shm;
@@ -422,6 +489,21 @@ void cu::fused_ff1ff3matmul_silu_host_fp32(float *xout, const float *x, const fl
     const int SHM_SIZE = sizeof(float) * WARPS_PER_BLOCK;
 
     fused_ff1ff3matmul_silu_kernel_fp32<WARPS_PER_BLOCK><<<GRID, BLOCK, SHM_SIZE>>>(xout, x, w1, w2, n, d);
+    CUDA_CHECK(cudaGetLastError());
+    CUDA_CHECK(cudaDeviceSynchronize());
+}
+
+extern "C"
+void fused_qkv_matmuls_host_fp32(float *q, float *k, float *v, const float *x, const float *wq, const float *wk, const float *wv, int dim, int kv_dim) {
+    // d - config.dim
+    // for Q (n=dim,d=dim)
+    // for  K,V (n=kv_dim,d=dim)
+    constexpr int WARPS_PER_BLOCK = 16;
+    const int GRID = (dim + WARPS_PER_BLOCK - 1) / WARPS_PER_BLOCK;
+    const int BLOCK = 32 * WARPS_PER_BLOCK;
+    const int SHM_SIZE = sizeof(float) * WARPS_PER_BLOCK * 3;
+
+    fused_qkv_matmuls_kernel_fp32<WARPS_PER_BLOCK><<<GRID, BLOCK, SHM_SIZE>>>(q, k, v, x, wq, wk, wv, dim, kv_dim);
     CUDA_CHECK(cudaGetLastError());
     CUDA_CHECK(cudaDeviceSynchronize());
 }

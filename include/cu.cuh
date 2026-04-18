@@ -18,6 +18,9 @@ namespace cu
     void fused_ff1ff3matmul_silu_host_fp32(float *xout, const float *x, const float *w1, const float *w2, int d, int n);
 
     extern "C"
+    void fused_qkv_matmuls_host_fp32(float *q, float *k, float *v, const float *x, const float *wq, const float *wk, const float *wv, int dim, int kv_dim);
+
+    extern "C"
     void rmsnorm_host_fp32(float *xout, const float *x, const float *weight, int d, float eps);
 
     extern "C"

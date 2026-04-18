@@ -128,6 +128,15 @@ private:
         }
     }
 
+    void fused_qkv_matmuls(float *q_out, float *k_out, float *v_out, const float *x, const T *wq, const T *wk, const T *wv, int dim, int kvdim) {
+        if constexpr (std::same_as<T, float>) {
+            // cu::fused_qkv_matmul_host_fp32(q_out, k_out, v_out, x, wq, wk, wv, n, d);
+            cu::fused_qkv_matmuls_host_fp32(q_out, k_out, v_out, x, wq, wk, wv, dim, kvdim);
+        } else {
+            ERR("FP16 fused qkv matmul not implemented yet.");
+        }
+    }
+
     void rmsnorm(float *xout, float *x, const float *w, int d, float eps) {
         if constexpr (std::same_as<T, float>) {
             cu::rmsnorm_host_fp32(xout, x, w, d, eps);
