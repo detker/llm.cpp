@@ -34,7 +34,7 @@ namespace cu
 
     extern "C"
     void attention_host(float *q, float *key_cache, float *value_cache, float *att, float *xb,
-        int pos, int head_dim, int kv_dim, int max_seq_len, int kv_mul, int n_heads);
+        int pos, int head_dim, int kv_dim, int max_seq_len, int kv_mul, int n_heads, int n_kv_heads);
 }
 
 

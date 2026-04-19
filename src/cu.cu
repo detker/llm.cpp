@@ -429,17 +429,64 @@ __global__ void attention_kernel(
         att[head_id * max_seq_len + i] /= global_denom;
     }
 
-    __syncthreads();
-
-    float *xb_head = xb + head_id * head_dim;
-    float out_val = 0.0f;
-    for (int t = 0; t <= pos; ++t) {
-        float v_val = value_cache[t * kv_dim + kv_head_id * head_dim + dim_id];
-        out_val += att[head_id * max_seq_len + t] * v_val;
-    }
-
-    xb_head[dim_id] = out_val;
+    // __syncthreads();
+    //
+    // float *xb_head = xb + head_id * head_dim;
+    // float out_val = 0.0f;
+    // for (int t = 0; t <= pos; ++t) {
+    //     float v_val = value_cache[t * kv_dim + kv_head_id * head_dim + dim_id];
+    //     out_val += att[head_id * max_seq_len + t] * v_val;
+    // }
+    //
+    // xb_head[dim_id] = out_val;
 }
+
+
+__global__ void attention_vmix_kernel_fp32(float *xout, // [dim (n_heads * head_dim),]
+                                           const float *att, // [n_heads, max_seq_len]
+                                           const float *val_cache, // [max_seq_len, kv_dim (n_kv_heads * head_dim)] => [max_seq_len, n_kv_heads, head_dim]
+                                           int head_dim,
+                                           int n_heads,
+                                           int n_kv_heads,
+                                           int seq_len,
+                                           int max_seq_len) {
+    int head_id = blockIdx.x;
+    int tid = threadIdx.x;
+    // int seq_len_block_id = blockIdx.y;
+    int group_size = n_heads / n_kv_heads;
+    int g = head_id / group_size;
+    int kv_stride = head_dim * n_kv_heads;
+
+    const float *att_ptr = att + head_id * max_seq_len;
+    const float *val_ptr = val_cache + g * head_dim;
+    float *out_ptr = xout + head_id * head_dim;
+
+    // int seq_len_block_size = seq_len / gridDim.y;
+    // int start_t = seq_len_block_id * seq_len_block_size;
+
+    __shared__ float shm[32];
+
+    for (int i = tid; i < head_dim; i += 32) {
+        if (threadIdx.y == 0) {
+            shm[threadIdx.x] = 0.0f;
+        }
+        __syncthreads();
+        float val = 0.0f;
+        // for (int t = start_t; t < start_t + seq_len_block_size && t < seq_len; ++t) {
+        //     val += att_ptr[t] * val_ptr[kv_stride * t + i];
+        // }
+        for (int t = threadIdx.y; t < seq_len; t += blockDim.y) {
+            val += att_ptr[t] * val_ptr[kv_stride * t + i];
+        }
+        atomicAdd(&shm[threadIdx.x], val);
+        __syncthreads();
+        if (threadIdx.y == 0) {
+            out_ptr[i] = shm[threadIdx.x];
+            shm[threadIdx.x] = 0.0f;
+        }
+    }
+}
+
 
 extern "C"
 void cu::matmul_host_fp32_hidim(float *xout, float *x, const float *w, int d, int n) {
@@ -558,7 +605,7 @@ void residual_host(float* x, const float *res, int d) {
 
 extern "C"
 void attention_host(float *q, float *key_cache, float *value_cache, float *att, float *xb,
-    int pos, int head_dim, int kv_dim, int max_seq_len, int kv_mul, int n_heads) {
+    int pos, int head_dim, int kv_dim, int max_seq_len, int kv_mul, int n_heads, int n_kv_heads) {
 
     CUDA_CHECK(cudaMemset(att, 0, sizeof(float) * n_heads * max_seq_len));
     CUDA_CHECK(cudaMemset(xb, 0, sizeof(float) * n_heads * head_dim));
@@ -568,6 +615,18 @@ void attention_host(float *q, float *key_cache, float *value_cache, float *att, 
     const size_t SHM_SIZE = (BLOCK_SIZE + 32) * sizeof(float);
 
     attention_kernel<<<GRID_SIZE, BLOCK_SIZE, SHM_SIZE>>>(q, key_cache, value_cache, att, xb, pos, head_dim, kv_dim, max_seq_len, kv_mul);
+    CUDA_CHECK(cudaGetLastError());
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    // constexpr int max_t_per_thread = 256;
+    constexpr int max_threads_per_block = 512;
+    dim3 GRID_SIZE1;
+    dim3 BLOCK_SIZE1;
+    GRID_SIZE1.x = n_heads;
+    // GRID_SIZE1.y = (pos+1 + max_t_per_thread - 1) / max_t_per_thread;
+    BLOCK_SIZE1.x = 32; // warp size
+    BLOCK_SIZE1.y = std::min(pos+1, max_threads_per_block / 32);
+    attention_vmix_kernel_fp32<<<GRID_SIZE1, BLOCK_SIZE1>>>(xb, att, value_cache, head_dim, n_heads, n_kv_heads, pos+1, max_seq_len);
     CUDA_CHECK(cudaGetLastError());
     CUDA_CHECK(cudaDeviceSynchronize());
 }
