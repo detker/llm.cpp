@@ -34,7 +34,7 @@ void GPUInference<T>::layer_forward(int layer_id, int pos) {
     this->UpdateKVCache(layer_id, pos);
 
     // 5. attention score calculation
-    int kv_mul = config->n_heads / config->n_kv_heads; // how many q heads per one kv head
+    int kv_mul = config->n_heads / config->n_kv_heads; // how many q heads per one kv head (group size in grouped attention)
     cu::attention_host(runState->q, runState->key_cache + layer_id * config->max_seq_len * kv_dim,
         runState->value_cache + layer_id * config->max_seq_len * kv_dim, runState->att, runState->xb,
         pos, config->head_dim, kv_dim, config->max_seq_len, kv_mul, config->n_heads, config->n_kv_heads);
