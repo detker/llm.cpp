@@ -23,7 +23,7 @@
 } while(0)
 
 inline void usage(const char* prog_name) {
-    fprintf(stderr, "Usage: %s <model_path> <prompt> <temperature>\n", prog_name);
+    fprintf(stderr, "Usage: %s <model_path> <prompt> <temperature> <backend> [max_seq_len]\n", prog_name);
     exit(EXIT_FAILURE);
 }
 

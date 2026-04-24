@@ -27,6 +27,7 @@ public:
         std::string txt;
         BackendType backend;
         float temperature = 0.0f;
+        int max_seq_len = 0;
     };
     static ParseResult parseArgs(int argc, char **argv);
     static long long calcWeightSize(const char *model_path, int header_size, int tokenizer_size);
