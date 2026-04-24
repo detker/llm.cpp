@@ -1,0 +1,6 @@
+torch
+safetensors
+huggingface_hub
+matplotlib
+numpy
+pandas
