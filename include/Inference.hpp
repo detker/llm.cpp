@@ -104,9 +104,36 @@ private:
 
     void matmul(float *xout, float *x, const T *w, int n, int d) override {
         if constexpr (std::same_as<T, float>) {
-            cu::matmul_host_fp32(xout, x, w, n, d);
+            auto v = std::min(n,d);
+            if (d*n > v*v) cu::matmul_host_fp32_hidim(xout, x, w, n, d);
+            else cu::matmul_host_fp32(xout, x, w, n, d);
         } else {
             ERR("FP16 matmul not implemented yet.");
+        }
+    }
+
+    void fused_matmul_residuals(float *xout, const float *x, const T *w, int n, int d) {
+        if constexpr (std::same_as<T, float>) {
+            cu::fused_matmul_add_residual_host_fp32(xout, x, w, n, d);
+        } else {
+            ERR("FP16 fused matmul + residuals not implemented yet.");
+        }
+    }
+
+    void fused_matmul_silu(float *xout, const float *x, const T *w1, const T *w2, int n, int d) {
+        if constexpr (std::same_as<T, float>) {
+            cu::fused_ff1ff3matmul_silu_host_fp32(xout, x, w1, w2, n, d);
+        } else {
+            ERR("FP16 fused matmul + silu not implemented yet.");
+        }
+    }
+
+    void fused_qkv_matmuls(float *q_out, float *k_out, float *v_out, const float *x, const T *wq, const T *wk, const T *wv, int dim, int kvdim) {
+        if constexpr (std::same_as<T, float>) {
+            // cu::fused_qkv_matmul_host_fp32(q_out, k_out, v_out, x, wq, wk, wv, n, d);
+            cu::fused_qkv_matmuls_host_fp32(q_out, k_out, v_out, x, wq, wk, wv, dim, kvdim);
+        } else {
+            ERR("FP16 fused qkv matmul not implemented yet.");
         }
     }
 

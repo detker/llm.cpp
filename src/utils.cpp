@@ -210,8 +210,9 @@ MiscUtils::ParseResult MiscUtils::parseArgs(int argc, char **argv) {
     std::string txt = argv[2];
     float temp = atof(argv[3]);
     BackendType backend = std::string(argv[4]) == "cuda" ? BackendType::GPU : BackendType::CPU;
+    int max_seq_len = argc > 5 ? atoi(argv[5]) : 0;
 
-    return MiscUtils::ParseResult{.model_path = model_path, .txt = txt, .backend = backend, .temperature = temp};
+    return MiscUtils::ParseResult{.model_path = model_path, .txt = txt, .backend = backend, .temperature = temp, .max_seq_len = max_seq_len};
 }
 
 long long MiscUtils::calcWeightSize(const char *model_path, int header_size, int tokenizer_size) {
