@@ -464,33 +464,35 @@ __global__ void attention_qk_kernel_fp32(const float *q, // [n_heads, head_dim]
     const float2 *q_ptr_f2 = reinterpret_cast<const float2*>(q + head_id*head_dim);
     float *att_ptr = att + head_id * max_seq_len;
 
-    // extern __shared__ unsigned char shm[];
-    // float *shm_att = reinterpret_cast<float*>(shm);
+    int q_iters = (head_dim / 2 + 31) / 32;
+    float2 q_reg[4]; // it'll do up to head_dim=256
+    #pragma unroll
+    for (int k = 0; k < q_iters; ++k) {
+        int i = tid + k * 32;
+        if (i < head_dim / 2) {
+            q_reg[k] = q_ptr_f2[i];
+        }
+    }
 
     for (int t = threadIdx.y; t < seq_len; t += blockDim.y) {
-        // if (tid == 0) {
-        //     shm_att[threadIdx.y] = 0.0f;
-        // }
-        // __syncthreads();
         float val = 0.0f;
         const __half2 *key_ptr_h2 = reinterpret_cast<const __half2*>(key_ptr + kv_stride * t);
-        for (int i = tid; i < head_dim/2; i += blockDim.x) {
-            float2 key_f2 = __half22float2(key_ptr_h2[i]);
-            val += q_ptr_f2[i].x * key_f2.x;
-            val += q_ptr_f2[i].y * key_f2.y;
+        #pragma unroll
+        for (int k = 0; k < q_iters; ++k) {
+            int i = tid + k * 32;
+            if (i < head_dim / 2) {
+                float2 key_f2 = __half22float2(key_ptr_h2[i]);
+
+                val += q_reg[k].x * key_f2.x;
+                val += q_reg[k].y * key_f2.y;
+            }
         }
+        #pragma unroll
         for (int offset = 16; offset > 0; offset >>= 1) {
             val += __shfl_down_sync(0xffffffff, val, offset);
         }
-        // if (tid == 0) {
-        //     // atomicAdd(&shm_att[threadIdx.y], val);
-        //     shm_att[threadIdx.y] = val;
-        // }
-        // __syncthreads();
         if (tid == 0) {
-            // att_ptr[t] = shm_att[threadIdx.y] / sqrtf(static_cast<float>(head_dim));
             att_ptr[t] = val / sqrtf(static_cast<float>(head_dim));
-            // shm_att[threadIdx.y] = 0.0f;
         }
     }
 }
@@ -552,7 +554,52 @@ __global__ void attention_vmix_kernel_fp32(float *xout, // [dim (n_heads * head_
         }
         __syncthreads();
         float2 val_f2 = make_float2(0.0f, 0.0f);
-        for (int t = threadIdx.y; t < seq_len; t += blockDim.y) {
+        float2 v01;
+        float att_t;
+
+        constexpr int UNROLL = 8;
+        __half2 v01_0; float att_0;
+        __half2 v01_1; float att_1;
+        __half2 v01_2; float att_2;
+        __half2 v01_3; float att_3;
+        __half2 v01_4; float att_4;
+        __half2 v01_5; float att_5;
+        __half2 v01_6; float att_6;
+        __half2 v01_7; float att_7;
+        int t = threadIdx.y;
+
+        for (int x = 0; x < seq_len / blockDim.y; x++, t += blockDim.y) {
+            if (x % UNROLL == 0) {
+                #define PREFETCH(j) \
+                    v01_##j = reinterpret_cast<const __half2 *>(val_ptr + kv_stride * (t + j*blockDim.y))[i]; \
+                    att_##j = att_ptr[t + j*blockDim.y];
+                PREFETCH(0);
+                PREFETCH(1);
+                PREFETCH(2);
+                PREFETCH(3);
+                PREFETCH(4);
+                PREFETCH(5);
+                PREFETCH(6);
+                PREFETCH(7);
+                #undef PREFETCH
+            }
+            switch (x % UNROLL) {
+                #define CASE(j) \
+                    case j: v01 = __half22float2(v01_##j); att_t = att_##j; break;
+                CASE(0);
+                CASE(1);
+                CASE(2);
+                CASE(3);
+                CASE(4);
+                CASE(5);
+                CASE(6);
+                CASE(7);
+                #undef CASE
+            }
+            val_f2.x += att_t * v01.x;
+            val_f2.y += att_t * v01.y;
+        }
+        for (; t < seq_len; t += blockDim.y) {
             float2 val_cache_f2 = __half22float2(reinterpret_cast<const __half2*>(val_ptr + kv_stride*t)[i]);
             val_f2.x += att_ptr[t] * val_cache_f2.x;
             val_f2.y += att_ptr[t] * val_cache_f2.y;
