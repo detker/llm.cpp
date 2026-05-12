@@ -1,7 +1,7 @@
 #include "cu.cuh"
 
 #include <cfloat>
-#include "errorUtils.hpp"
+
 
 
 template<int WARPS_PER_BLOCK>
@@ -331,11 +331,62 @@ __global__ void rope_kernel(
     q[i + 1] = q0 * fci + q1 * fcr;
 
     if (i < kv_dim) {
-        float k0 = static_cast<float>(k[i]);
-        float k1 = static_cast<float>(k[i + 1]);
+        const float k0 = (k[i]);
+        const float k1 = (k[i+1]);
 
-        k[i]     = k0 * fcr - k1 * fci;
-        k[i + 1] = k0 * fci + k1 * fcr;
+        k[i]     = (k0 * fcr - k1 * fci);
+        k[i + 1] = (k0 * fci + k1 * fcr);
+    }
+}
+
+
+__global__ void fused_rope_kvcache_update_kernel_fp32(
+    float* __restrict__ q,
+    float* __restrict__ k,
+    float* __restrict__ v,
+    int layer_id,
+    int pos,
+    float theta,
+    int dim,
+    int kv_dim,
+    int head_dim,
+    __half *key_cache,
+    __half *value_cache)
+{
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+
+    int i = tid * 2;
+
+    if (i >= dim) return;
+
+    int head_i = i % head_dim;
+
+    float freq = 1.0f / powf(theta, static_cast<float>(head_i) / static_cast<float>(head_dim));
+    float val = freq * static_cast<float>(pos);
+
+    float fci, fcr;
+    __sincosf(val, &fci, &fcr);
+
+    float2 q_01_f2 = reinterpret_cast<float2*>(q+i)[0];
+    const float rope_q0 = q_01_f2.x * fcr - q_01_f2.y * fci;
+    const float rope_q1 = q_01_f2.x * fci + q_01_f2.y * fcr;
+    reinterpret_cast<float2*>(q+i)[0] = make_float2(rope_q0, rope_q1);
+
+    if (i < kv_dim) {
+        float2 k_01_f2 = reinterpret_cast<float2*>(k+i)[0];
+        const float rope_k0 = k_01_f2.x * fcr - k_01_f2.y * fci;
+        const float rope_k1 = k_01_f2.x * fci + k_01_f2.y * fcr;
+
+        float2 rope_k01_f2 = make_float2(rope_k0, rope_k1);
+        reinterpret_cast<float2*>(k+i)[0] = rope_k01_f2;
+
+        // Update KV cache
+        __half2 *key_cache_h2 = reinterpret_cast<__half2*>(key_cache+i);
+        key_cache_h2[0] = __float22half2_rn(rope_k01_f2);
+
+        float2 v_01_f2 = reinterpret_cast<float2*>(v+i)[0];
+        __half2 *value_cache_h2 = reinterpret_cast<__half2*>(value_cache+i);
+        value_cache_h2[0] = __float22half2_rn(v_01_f2);
     }
 }
 
@@ -395,7 +446,7 @@ __device__ inline float block_reduce_max(float val, float* shared_mem) {
 }
 
 __global__ void attention_qk_kernel_fp32(const float *q, // [n_heads, head_dim]
-                                 const float *key_cache, // [max_seq_len, kv_dim (n_kv_heads * head_dim)] => [max_seq_len, n_kv_heads, head_dim]
+                                 const __half *key_cache, // [max_seq_len, kv_dim (n_kv_heads * head_dim)] => [max_seq_len, n_kv_heads, head_dim]
                                  float *att, // [n_heads, max_seq_len]
                                  int head_dim,
                                  int n_heads,
@@ -409,27 +460,39 @@ __global__ void attention_qk_kernel_fp32(const float *q, // [n_heads, head_dim]
     int g = head_id / group_size;
     int kv_stride = n_kv_heads * head_dim;
 
-    const float *q_ptr = q + head_id * head_dim;
-    const float *key_ptr = key_cache + g * head_dim;
+    const __half *key_ptr = key_cache + g * head_dim;
+    const float2 *q_ptr_f2 = reinterpret_cast<const float2*>(q + head_id*head_dim);
     float *att_ptr = att + head_id * max_seq_len;
 
-    extern __shared__ unsigned char shm[];
-    float *shm_att = reinterpret_cast<float*>(shm);
+    int q_iters = (head_dim / 2 + 31) / 32;
+    float2 q_reg[4]; // it'll do up to head_dim=256
+    #pragma unroll
+    for (int k = 0; k < q_iters; ++k) {
+        int i = tid + k * 32;
+        if (i < head_dim / 2) {
+            q_reg[k] = q_ptr_f2[i];
+        }
+    }
 
     for (int t = threadIdx.y; t < seq_len; t += blockDim.y) {
-        if (tid == 0) {
-            shm_att[threadIdx.y] = 0.0f;
-        }
-        __syncthreads();
         float val = 0.0f;
-        for (int i = tid; i < head_dim; i += blockDim.x) {
-            val += q_ptr[i] * key_ptr[kv_stride * t + i];
+        const __half2 *key_ptr_h2 = reinterpret_cast<const __half2*>(key_ptr + kv_stride * t);
+        #pragma unroll
+        for (int k = 0; k < q_iters; ++k) {
+            int i = tid + k * 32;
+            if (i < head_dim / 2) {
+                float2 key_f2 = __half22float2(key_ptr_h2[i]);
+
+                val += q_reg[k].x * key_f2.x;
+                val += q_reg[k].y * key_f2.y;
+            }
         }
-        atomicAdd(&shm_att[threadIdx.y], val);
-        __syncthreads();
+        #pragma unroll
+        for (int offset = 16; offset > 0; offset >>= 1) {
+            val += __shfl_down_sync(0xffffffff, val, offset);
+        }
         if (tid == 0) {
-            att_ptr[t] = shm_att[threadIdx.y] / sqrtf(static_cast<float>(head_dim));
-            shm_att[threadIdx.y] = 0.0f;
+            att_ptr[t] = val / sqrtf(static_cast<float>(head_dim));
         }
     }
 }
@@ -464,7 +527,7 @@ __global__ void softmax_kernel_fp32(float *att, // [n_heads, max_seq_len]
 
 __global__ void attention_vmix_kernel_fp32(float *xout, // [dim (n_heads * head_dim),]
                                            const float *att, // [n_heads, max_seq_len]
-                                           const float *val_cache, // [max_seq_len, kv_dim (n_kv_heads * head_dim)] => [max_seq_len, n_kv_heads, head_dim]
+                                           const __half *val_cache, // [max_seq_len, kv_dim (n_kv_heads * head_dim)] => [max_seq_len, n_kv_heads, head_dim]
                                            int head_dim,
                                            int n_heads,
                                            int n_kv_heads,
@@ -477,26 +540,77 @@ __global__ void attention_vmix_kernel_fp32(float *xout, // [dim (n_heads * head_
     int kv_stride = head_dim * n_kv_heads;
 
     const float *att_ptr = att + head_id * max_seq_len;
-    const float *val_ptr = val_cache + g * head_dim;
-    float *out_ptr = xout + head_id * head_dim;
+    const __half *val_ptr = val_cache + g * head_dim;
+    float2 *out_ptr_f2 = reinterpret_cast<float2*>(xout + head_id*head_dim);
 
     extern __shared__ unsigned char shm[];
-    float *shm_ptr = reinterpret_cast<float*>(shm);
+    float *shm_ptr_even = reinterpret_cast<float*>(shm);
+    float *shm_ptr_odd = reinterpret_cast<float*>(shm + blockDim.x * sizeof(float));
 
-    for (int i = tid; i < head_dim; i += 32) {
+    for (int i = tid; i < head_dim/2; i += 32) {
         if (threadIdx.y == 0) {
-            shm_ptr[threadIdx.x] = 0.0f;
+            shm_ptr_even[threadIdx.x] = 0.0f;
+            shm_ptr_odd[threadIdx.x] = 0.0f;
         }
         __syncthreads();
-        float val = 0.0f;
-        for (int t = threadIdx.y; t < seq_len; t += blockDim.y) {
-            val += att_ptr[t] * val_ptr[kv_stride * t + i];
+        float2 val_f2 = make_float2(0.0f, 0.0f);
+        float2 v01;
+        float att_t;
+
+        constexpr int UNROLL = 8;
+        __half2 v01_0; float att_0;
+        __half2 v01_1; float att_1;
+        __half2 v01_2; float att_2;
+        __half2 v01_3; float att_3;
+        __half2 v01_4; float att_4;
+        __half2 v01_5; float att_5;
+        __half2 v01_6; float att_6;
+        __half2 v01_7; float att_7;
+        int t = threadIdx.y;
+
+        for (int x = 0; x < seq_len / blockDim.y; x++, t += blockDim.y) {
+            if (x % UNROLL == 0) {
+                #define PREFETCH(j) \
+                    v01_##j = reinterpret_cast<const __half2 *>(val_ptr + kv_stride * (t + j*blockDim.y))[i]; \
+                    att_##j = att_ptr[t + j*blockDim.y];
+                PREFETCH(0);
+                PREFETCH(1);
+                PREFETCH(2);
+                PREFETCH(3);
+                PREFETCH(4);
+                PREFETCH(5);
+                PREFETCH(6);
+                PREFETCH(7);
+                #undef PREFETCH
+            }
+            switch (x % UNROLL) {
+                #define CASE(j) \
+                    case j: v01 = __half22float2(v01_##j); att_t = att_##j; break;
+                CASE(0);
+                CASE(1);
+                CASE(2);
+                CASE(3);
+                CASE(4);
+                CASE(5);
+                CASE(6);
+                CASE(7);
+                #undef CASE
+            }
+            val_f2.x += att_t * v01.x;
+            val_f2.y += att_t * v01.y;
         }
-        atomicAdd(&shm_ptr[threadIdx.x], val);
+        for (; t < seq_len; t += blockDim.y) {
+            float2 val_cache_f2 = __half22float2(reinterpret_cast<const __half2*>(val_ptr + kv_stride*t)[i]);
+            val_f2.x += att_ptr[t] * val_cache_f2.x;
+            val_f2.y += att_ptr[t] * val_cache_f2.y;
+        }
+        atomicAdd(&shm_ptr_even[threadIdx.x], val_f2.x);
+        atomicAdd(&shm_ptr_odd[threadIdx.x], val_f2.y);
         __syncthreads();
         if (threadIdx.y == 0) {
-            out_ptr[i] = shm_ptr[threadIdx.x];
-            shm_ptr[threadIdx.x] = 0.0f;
+            out_ptr_f2[i] = make_float2(shm_ptr_even[threadIdx.x], shm_ptr_odd[threadIdx.x]);
+            shm_ptr_even[threadIdx.x] = 0.0f;
+            shm_ptr_odd[threadIdx.x] = 0.0f;
         }
     }
 }
@@ -570,6 +684,19 @@ void fused_qkv_matmuls_host_fp32(float *q, float *k, float *v, const float *x, c
 }
 
 extern "C"
+void fused_rope_kvcache_update_host_fp32(float *q, float *k, float *v, int layer_id, int pos, float rope_theta, int dim, int kv_dim, int head_dim, float16_t *key_cache, float16_t *value_cache) {
+    int total_threads = dim / 2;
+    int threads_per_block = 256;
+    int blocks_per_grid = (total_threads + threads_per_block - 1) / threads_per_block;
+
+    fused_rope_kvcache_update_kernel_fp32<<<blocks_per_grid, threads_per_block>>>(
+        q, k, v, layer_id, pos, rope_theta, dim, kv_dim, head_dim, reinterpret_cast<__half*>(key_cache), reinterpret_cast<__half*>(value_cache)
+    );
+    CUDA_CHECK(cudaGetLastError());
+    CUDA_CHECK(cudaDeviceSynchronize());
+}
+
+extern "C"
 void rmsnorm_host_fp32(float *xout, const float *x, const float *weight, int d, float eps) {
     const size_t WARPS_PER_BLOCK = 16;
     const size_t BLOCK_SIZE = WARPS_PER_BLOCK * 32;
@@ -618,7 +745,7 @@ void residual_host(float* x, const float *res, int d) {
 }
 
 extern "C"
-void attention_host(float *q, float *key_cache, float *value_cache, float *att, float *xb,
+void attention_host(float *q, float16_t *key_cache, float16_t *value_cache, float *att, float *xb,
     int pos, int head_dim, int kv_dim, int max_seq_len, int kv_mul, int n_heads, int n_kv_heads) {
 
     constexpr int max_threads_per_block = 512;
@@ -627,8 +754,9 @@ void attention_host(float *q, float *key_cache, float *value_cache, float *att, 
     GRID_SIZE_KV.x = n_heads;
     BLOCK_SIZE_KV.x = 32; // warp size
     BLOCK_SIZE_KV.y = std::min(pos+1, max_threads_per_block / 32);
-    size_t SHM_SIZE_K = sizeof(float) * BLOCK_SIZE_KV.y;
-    size_t SHM_SIZE_V = sizeof(float) * BLOCK_SIZE_KV.x;
+    // size_t SHM_SIZE_K = sizeof(float) * BLOCK_SIZE_KV.y;
+    size_t SHM_SIZE_K = 0;
+    size_t SHM_SIZE_V = sizeof(float) * BLOCK_SIZE_KV.x * 2;
     const size_t BLOCK_SIZE_SOFTMAX = head_dim;
     const size_t GRID_SIZE_SOFTMAX = n_heads;
     const size_t SHM_SIZE_SOFTMAX = 32 * sizeof(float);
@@ -636,7 +764,7 @@ void attention_host(float *q, float *key_cache, float *value_cache, float *att, 
     CUDA_CHECK(cudaMemset(att, 0, sizeof(float) * n_heads * max_seq_len));
     CUDA_CHECK(cudaMemset(xb, 0, sizeof(float) * n_heads * head_dim));
     
-    attention_qk_kernel_fp32<<<GRID_SIZE_KV, BLOCK_SIZE_KV, SHM_SIZE_K>>>(q, key_cache, att, head_dim, n_heads, n_kv_heads, pos+1, max_seq_len);
+    attention_qk_kernel_fp32<<<GRID_SIZE_KV, BLOCK_SIZE_KV, SHM_SIZE_K>>>(q, reinterpret_cast<__half*>(key_cache), att, head_dim, n_heads, n_kv_heads, pos+1, max_seq_len);
     CUDA_CHECK(cudaGetLastError());
     CUDA_CHECK(cudaDeviceSynchronize());
 
@@ -644,7 +772,7 @@ void attention_host(float *q, float *key_cache, float *value_cache, float *att, 
     CUDA_CHECK(cudaGetLastError());
     CUDA_CHECK(cudaDeviceSynchronize());
 
-    attention_vmix_kernel_fp32<<<GRID_SIZE_KV, BLOCK_SIZE_KV, SHM_SIZE_V>>>(xb, att, value_cache, head_dim, n_heads, n_kv_heads, pos+1, max_seq_len);
+    attention_vmix_kernel_fp32<<<GRID_SIZE_KV, BLOCK_SIZE_KV, SHM_SIZE_V>>>(xb, att, reinterpret_cast<__half*>(value_cache), head_dim, n_heads, n_kv_heads, pos+1, max_seq_len);
     CUDA_CHECK(cudaGetLastError());
     CUDA_CHECK(cudaDeviceSynchronize());
 }

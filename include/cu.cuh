@@ -2,6 +2,9 @@
 #define LLM_CPP_CU_HPP
 
 #include <cuda_runtime.h>
+#include <cuda_fp16.h>
+#include "errorUtils.hpp"
+#include "utils.hpp"
 
 namespace cu
 {
@@ -21,6 +24,9 @@ namespace cu
     void fused_qkv_matmuls_host_fp32(float *q, float *k, float *v, const float *x, const float *wq, const float *wk, const float *wv, int dim, int kv_dim);
 
     extern "C"
+    void fused_rope_kvcache_update_host_fp32(float *q, float *k, float *v, int layer_id, int pos, float rope_theta, int dim, int kv_dim, int head_dim, float16_t *key_cache, float16_t *value_cache);
+
+    extern "C"
     void rmsnorm_host_fp32(float *xout, const float *x, const float *weight, int d, float eps);
 
     extern "C"
@@ -33,7 +39,7 @@ namespace cu
     void residual_host(float* x, const float *res, int d);
 
     extern "C"
-    void attention_host(float *q, float *key_cache, float *value_cache, float *att, float *xb,
+    void attention_host(float *q, float16_t *key_cache, float16_t *value_cache, float *att, float *xb,
         int pos, int head_dim, int kv_dim, int max_seq_len, int kv_mul, int n_heads, int n_kv_heads);
 }
 
