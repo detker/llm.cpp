@@ -331,11 +331,6 @@ __global__ void rope_kernel(
     q[i + 1] = q0 * fci + q1 * fcr;
 
     if (i < kv_dim) {
-        // const float k0 = __half2float(k[i]);
-        // const float k1 = __half2float(k[i+1]);
-        //
-        // k[i]     = __float2half(k0 * fcr - k1 * fci);
-        // k[i + 1] = __float2half(k0 * fci + k1 * fcr);
         const float k0 = (k[i]);
         const float k1 = (k[i+1]);
 
@@ -372,27 +367,26 @@ __global__ void fused_rope_kvcache_update_kernel_fp32(
     float fci, fcr;
     __sincosf(val, &fci, &fcr);
 
-    float q0 = q[i];
-    float q1 = q[i + 1];
-
-    q[i]     = q0 * fcr - q1 * fci;
-    q[i + 1] = q0 * fci + q1 * fcr;
+    float2 q_01_f2 = reinterpret_cast<float2*>(q+i)[0];
+    const float rope_q0 = q_01_f2.x * fcr - q_01_f2.y * fci;
+    const float rope_q1 = q_01_f2.x * fci + q_01_f2.y * fcr;
+    reinterpret_cast<float2*>(q+i)[0] = make_float2(rope_q0, rope_q1);
 
     if (i < kv_dim) {
-        const float k0 = (k[i]);
-        const float k1 = (k[i+1]);
+        float2 k_01_f2 = reinterpret_cast<float2*>(k+i)[0];
+        const float rope_k0 = k_01_f2.x * fcr - k_01_f2.y * fci;
+        const float rope_k1 = k_01_f2.x * fci + k_01_f2.y * fcr;
 
-        const float rope_k0 = k0 * fcr - k1 * fci;
-        const float rope_k1 = k0 * fci + k1 * fcr;
-
-        k[i]     = rope_k0;
-        k[i + 1] = rope_k1;
+        float2 rope_k01_f2 = make_float2(rope_k0, rope_k1);
+        reinterpret_cast<float2*>(k+i)[0] = rope_k01_f2;
 
         // Update KV cache
-        key_cache[i] = __float2half(rope_k0);
-        key_cache[i + 1] = __float2half(rope_k1);
-        value_cache[i] = __float2half(v[i]);
-        value_cache[i + 1] = __float2half(v[i+1]);
+        __half2 *key_cache_h2 = reinterpret_cast<__half2*>(key_cache+i);
+        key_cache_h2[0] = __float22half2_rn(rope_k01_f2);
+
+        float2 v_01_f2 = reinterpret_cast<float2*>(v+i)[0];
+        __half2 *value_cache_h2 = reinterpret_cast<__half2*>(value_cache+i);
+        value_cache_h2[0] = __float22half2_rn(v_01_f2);
     }
 }
 
@@ -466,27 +460,37 @@ __global__ void attention_qk_kernel_fp32(const float *q, // [n_heads, head_dim]
     int g = head_id / group_size;
     int kv_stride = n_kv_heads * head_dim;
 
-    const float *q_ptr = q + head_id * head_dim;
     const __half *key_ptr = key_cache + g * head_dim;
+    const float2 *q_ptr_f2 = reinterpret_cast<const float2*>(q + head_id*head_dim);
     float *att_ptr = att + head_id * max_seq_len;
 
-    extern __shared__ unsigned char shm[];
-    float *shm_att = reinterpret_cast<float*>(shm);
+    // extern __shared__ unsigned char shm[];
+    // float *shm_att = reinterpret_cast<float*>(shm);
 
     for (int t = threadIdx.y; t < seq_len; t += blockDim.y) {
-        if (tid == 0) {
-            shm_att[threadIdx.y] = 0.0f;
-        }
-        __syncthreads();
+        // if (tid == 0) {
+        //     shm_att[threadIdx.y] = 0.0f;
+        // }
+        // __syncthreads();
         float val = 0.0f;
-        for (int i = tid; i < head_dim; i += blockDim.x) {
-            val += q_ptr[i] * __half2float(key_ptr[kv_stride * t + i]);
+        const __half2 *key_ptr_h2 = reinterpret_cast<const __half2*>(key_ptr + kv_stride * t);
+        for (int i = tid; i < head_dim/2; i += blockDim.x) {
+            float2 key_f2 = __half22float2(key_ptr_h2[i]);
+            val += q_ptr_f2[i].x * key_f2.x;
+            val += q_ptr_f2[i].y * key_f2.y;
         }
-        atomicAdd(&shm_att[threadIdx.y], val);
-        __syncthreads();
+        for (int offset = 16; offset > 0; offset >>= 1) {
+            val += __shfl_down_sync(0xffffffff, val, offset);
+        }
+        // if (tid == 0) {
+        //     // atomicAdd(&shm_att[threadIdx.y], val);
+        //     shm_att[threadIdx.y] = val;
+        // }
+        // __syncthreads();
         if (tid == 0) {
-            att_ptr[t] = shm_att[threadIdx.y] / sqrtf(static_cast<float>(head_dim));
-            shm_att[threadIdx.y] = 0.0f;
+            // att_ptr[t] = shm_att[threadIdx.y] / sqrtf(static_cast<float>(head_dim));
+            att_ptr[t] = val / sqrtf(static_cast<float>(head_dim));
+            // shm_att[threadIdx.y] = 0.0f;
         }
     }
 }
@@ -535,25 +539,31 @@ __global__ void attention_vmix_kernel_fp32(float *xout, // [dim (n_heads * head_
 
     const float *att_ptr = att + head_id * max_seq_len;
     const __half *val_ptr = val_cache + g * head_dim;
-    float *out_ptr = xout + head_id * head_dim;
+    float2 *out_ptr_f2 = reinterpret_cast<float2*>(xout + head_id*head_dim);
 
     extern __shared__ unsigned char shm[];
-    float *shm_ptr = reinterpret_cast<float*>(shm);
+    float *shm_ptr_even = reinterpret_cast<float*>(shm);
+    float *shm_ptr_odd = reinterpret_cast<float*>(shm + blockDim.x * sizeof(float));
 
-    for (int i = tid; i < head_dim; i += 32) {
+    for (int i = tid; i < head_dim/2; i += 32) {
         if (threadIdx.y == 0) {
-            shm_ptr[threadIdx.x] = 0.0f;
+            shm_ptr_even[threadIdx.x] = 0.0f;
+            shm_ptr_odd[threadIdx.x] = 0.0f;
         }
         __syncthreads();
-        float val = 0.0f;
+        float2 val_f2 = make_float2(0.0f, 0.0f);
         for (int t = threadIdx.y; t < seq_len; t += blockDim.y) {
-            val += att_ptr[t] * __half2float(val_ptr[kv_stride * t + i]);
+            float2 val_cache_f2 = __half22float2(reinterpret_cast<const __half2*>(val_ptr + kv_stride*t)[i]);
+            val_f2.x += att_ptr[t] * val_cache_f2.x;
+            val_f2.y += att_ptr[t] * val_cache_f2.y;
         }
-        atomicAdd(&shm_ptr[threadIdx.x], val);
+        atomicAdd(&shm_ptr_even[threadIdx.x], val_f2.x);
+        atomicAdd(&shm_ptr_odd[threadIdx.x], val_f2.y);
         __syncthreads();
         if (threadIdx.y == 0) {
-            out_ptr[i] = shm_ptr[threadIdx.x];
-            shm_ptr[threadIdx.x] = 0.0f;
+            out_ptr_f2[i] = make_float2(shm_ptr_even[threadIdx.x], shm_ptr_odd[threadIdx.x]);
+            shm_ptr_even[threadIdx.x] = 0.0f;
+            shm_ptr_odd[threadIdx.x] = 0.0f;
         }
     }
 }
@@ -697,8 +707,9 @@ void attention_host(float *q, float16_t *key_cache, float16_t *value_cache, floa
     GRID_SIZE_KV.x = n_heads;
     BLOCK_SIZE_KV.x = 32; // warp size
     BLOCK_SIZE_KV.y = std::min(pos+1, max_threads_per_block / 32);
-    size_t SHM_SIZE_K = sizeof(float) * BLOCK_SIZE_KV.y;
-    size_t SHM_SIZE_V = sizeof(float) * BLOCK_SIZE_KV.x;
+    // size_t SHM_SIZE_K = sizeof(float) * BLOCK_SIZE_KV.y;
+    size_t SHM_SIZE_K = 0;
+    size_t SHM_SIZE_V = sizeof(float) * BLOCK_SIZE_KV.x * 2;
     const size_t BLOCK_SIZE_SOFTMAX = head_dim;
     const size_t GRID_SIZE_SOFTMAX = n_heads;
     const size_t SHM_SIZE_SOFTMAX = 32 * sizeof(float);
