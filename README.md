@@ -4,16 +4,16 @@ A from-scratch LLM inference engine in raw C++/CUDA for Mistral-v0.2 architectur
 
 ## Overview
 
-llm.cpp runs autoregressive inference on the **Mistral-7B-Instruct-v0.2** model on CPU (with OpenMP + AVX2/F16C) and on NVIDIA GPUs (with custom CUDA kernels). The entire forward pass - embedding lookup, RMSNorm, QKV projections, RoPE, grouped-query attention with KV caching, SiLU-gated FFN, and logit projection - is implemented from scratch with no dependencies on cuBLAS, cuDNN or any ML framework at runtime.
+llm.cpp runs autoregressive inference on the **Mistral-7B-Instruct-v0.2** model on CPU (with OpenMP + AVX2/F16C) and on NVIDIA GPUs (with custom CUDA kernels). The entire forward pass - embedding lookup, RMSNorm, QKV projections, RoPE, quantized FP16 KV cache, grouped-query attention, SiLU-gated FFN, and logit projection - is implemented from scratch with no dependencies on cuBLAS, cuDNN or any ML framework at runtime.
 
-**Key numbers** (NVIDIA RTX 5090, Mistral-7B FP32):
+**Key numbers** (NVIDIA RTX 5090, Mistral-7B FP32, FP16 KV cache):
 
 | Engine | Tok/s (seq_len=128) | Tok/s (seq_len=1024) | Latency (ms/tok) |
 |--------|---------------------|----------------------|-------------------|
-| **llm.cpp** (CUDA FP32) | **~50** | **~42**              | 20–24 |
-| llama.cpp (CUDA FP32) | ~57 | ~57                  | ~17.7 |
+| **llm.cpp** (CUDA FP32, FP16 KV) | **~51** | **~49**              | 19.5–20.4 |
+| llama.cpp (CUDA FP32, FP16 KV) | ~57 | ~57                  | ~17.7 |
 
-llm.cpp achieves **74–88%** of llama.cpp's throughput depending on context length - with hand-written kernels, no cuBLAS/cuDNN. See [Evaluation](#evaluation) for full results.
+llm.cpp achieves **87–91%** of llama.cpp's throughput depending on context length - with hand-written kernels, no cuBLAS/cuDNN. See [Evaluation](#evaluation) for full results.
 
 ## Architecture
 
@@ -50,8 +50,7 @@ For each transformer layer (×32 for Mistral-7B):
 
 1. **RMSNorm** on the residual stream
 2. **Fused QKV projection** - single kernel computes Q, K, V matmuls simultaneously
-3. **Rotary Position Embedding (RoPE)** with θ=1,000,000
-4. **KV cache update** - append K, V to the per-layer cache
+3. **Fused RoPE + KV cache update** - applies rotary position embedding (θ=1,000,000) and quantizes K, V to FP16 before appending to the per-layer cache
 5. **Grouped-Query Attention** - 32 query heads, 8 KV heads (4:1 GQA ratio)
    - Q·K^T scores → softmax → weighted V mix
 6. **Output projection + residual** - fused matmul with residual add
@@ -76,7 +75,7 @@ Conversion from HuggingFace safetensors via `convert.py`, which handles the QK p
 
 ## CUDA Kernels
 
-All kernels in `src/cu.cu` are FP32, using 512 threads/block (16 warps × 32 threads). Key design choices:
+All kernels stored in `src/cu.cu`. Compute is FP32; the KV cache is stored in FP16 for reduced memory bandwidth during attention. Key design choices:
 
 ### GEMV Kernels
 
@@ -94,22 +93,21 @@ Kernel fusion was the primary optimization strategy, reducing global memory roun
 | `fused_qkv_matmuls_kernel_fp32` | Q, K, V projections into one kernel | Reads input `x` once instead of 3× |
 | `fused_matmul_kernel_add_residual_fp32` | Matmul + residual connection | Eliminates intermediate buffer write/read |
 | `fused_ff1ff3matmul_silu_kernel_fp32` | Gate (W1) + Up (W3) projections + SiLU activation + element-wise multiply | Reads input once, applies activation in registers |
+| `fused_rope_kvcache_update_kernel_fp32` | RoPE + FP32→FP16 quantization + KV cache write | Eliminates separate RoPE pass and FP16 conversion round-trip |
 
 ### Attention Kernels
 
-The attention computation is split into three kernels for clarity and to allow tuning shared memory usage independently:
+The attention computation is split into three kernels for clarity and to allow tuning shared memory usage independently. The QK and V mix kernels read directly from the FP16 KV cache, halving memory bandwidth vs FP32:
 
-1. **`attention_qk_kernel_fp32`** - computes Q·K^T scores with `atomicAdd` reduction across threads, scaled by 1/√d_head
+1. **`attention_qk_kernel_fp32`** - computes Q·K^T scores reading FP16 keys, with `atomicAdd` reduction across threads, scaled by 1/√d_head
 2. **`softmax_kernel_fp32`** - numerically stable softmax with block-level max reduction followed by block-level sum reduction
-3. **`attention_vmix_kernel_fp32`** - weighted value mixing: att × V with reduction across the sequence dimension
+3. **`attention_vmix_kernel_fp32`** - weighted value mixing: att × V reading FP16 values, with loop unrolling and prefetch for memory latency hiding
 
 All attention kernels are GQA-aware: they compute the group index `g = head_id / group_size` to map multiple query heads to the same KV head.
 
 ### Other Kernels
 
 - **`rmsnorm_kernel_fp32`** - two-pass: (1) block reduction for mean-square, (2) element-wise scale with `rsqrtf`
-- **`rope_kernel`** - per-pair rotation using `__sincosf` for fast sin/cos
-- **`silu_kernel`** / **`residual_kernel`** - element-wise operations
 
 ## Profiling with NVIDIA Nsight Compute
 
@@ -139,6 +137,9 @@ Each commit on `feature/cuda-gpu-fp32` represents an optimization step informed 
 | 6 | `9f05894` | Excessive global memory traffic in FFN       | Fused matmul+residual, fused FF1+FF3+SiLU kernels              |
 | 7 | `b6d86c5` | 3× redundant input reads in QKV projection   | Fused QKV matmul kernel                                        |
 | 8 | `63135fd` | Attention kernel register pressure           | Attention kernel restructuring                                 |
+| 9 | `54c0857` | KV cache memory bandwidth bottleneck at long contexts | FP16 KV cache quantization, fused RoPE + KV cache update kernel |
+| 10 | `e36f5b4` | Sub-optimal memory transactions with FP16 KV | 128-byte aligned loads/stores, KV matmul kernel optimization   |
+| 11 | `3c856f3` | V mix kernel stalls on memory latency        | Loop unrolling + prefetch in attention V mix                   |
 
 
 ### Using Nsight Systems for End-to-End Profiling
@@ -155,29 +156,29 @@ The timeline also showed that `cudaDeviceSynchronize()` after every kernel launc
 
 ## Evaluation
 
-The `evaluate.py` script benchmarks llm.cpp against llama.cpp on Mistral-7B FP32 with CUDA, measuring how throughput scales with context length by running the same prompts at different `max_seq_len` values.
+The `evaluate.py` script benchmarks llm.cpp against llama.cpp on Mistral-7B FP32 (with FP16 KV cache) with CUDA, measuring how throughput scales with context length by running the same prompts at different `max_seq_len` values.
 
 ### Methodology
 
 Both engines receive the same 3 long-form prompts (GPU architecture, transformer implementation, AI history) - prompts designed to always produce more tokens than the context cap allows. The `max_seq_len` parameter is swept across `[128, 256, 512, 1024]`. Each configuration is run 3 times after 1 warmup run, with results averaged.
 
-For llm.cpp, `max_seq_len` is passed as a CLI argument that caps the KV cache and generation length. For llama.cpp, the equivalent is `-c <max_seq_len>` (context size). Both engines use temperature 0.7.
+For llm.cpp, `max_seq_len` is passed as a CLI argument that caps the KV cache and generation length. For llama.cpp, the equivalent is `-c <max_seq_len>` (context size). Both engines use temperature 0.7 and FP16 KV cache (llama.cpp's default).
 
 
 ### Results
 
 ![Scaling Panel](imgs/scaling_panel_GPU.png)
 
-- **Top-left (Throughput):** llama.cpp holds flat at ~57 tok/s regardless of context length. llm.cpp starts at ~50 tok/s on short contexts and drops to ~42 tok/s at max_seq_len=1024 - the gap widens from ~12% to ~26%.
-- **Top-right (Speedup):** llm.cpp runs at 0.85–0.88x of llama.cpp on short contexts, dropping to ~0.74x at 1024. The parity line (1.0x) is the target.
-- **Bottom-left (Latency):** Mirror of throughput. llama.cpp stays at ~17.7 ms/tok. llm.cpp ranges from ~20 ms/tok (128) to ~24 ms/tok (1024).
-- **Bottom-right (Total Time):** At max_seq_len=1024, llm.cpp takes ~22s vs llama.cpp's ~16s.
+- **Top-left (Throughput):** llama.cpp holds flat at ~57 tok/s regardless of context length. llm.cpp starts at ~51 tok/s on short contexts and drops to ~49 tok/s at max_seq_len=1024 - the gap narrows from ~10% to ~13%.
+- **Top-right (Speedup):** llm.cpp runs at 0.91x of llama.cpp on short contexts, dropping to ~0.87x at 1024. The parity line (1.0x) is the target.
+- **Bottom-left (Latency):** Mirror of throughput. llama.cpp stays at ~17.7 ms/tok. llm.cpp ranges from ~19.5 ms/tok (128) to ~20.4 ms/tok (1024).
+- **Bottom-right (Total Time):** At max_seq_len=1024, llm.cpp takes ~18.6s vs llama.cpp's ~15.9s.
 
 #### Analysis
 
-Achieving **74–88% of llama.cpp's throughput** with a from-scratch engine is a good result. llama.cpp is a mature project with years of optimization by hundreds of contributors, backed by the ggml tensor library, and featuring flash attention, CUDA graph execution, and async kernel scheduling.
+Achieving **87–91% of llama.cpp's throughput** with a from-scratch engine is a strong result. llama.cpp is a mature project with years of optimization by hundreds of contributors, backed by the ggml tensor library, and featuring flash attention, CUDA graph execution, and async kernel scheduling.
 
-llama.cpp's throughput stays flat across context lengths, while llm.cpp degrades. The GEMV matmuls that dominate runtime are O(d²) per token regardless of context length, but attention is O(seq_len) - as context grows, attention takes a larger share of total per-token time. llm.cpp's attention is split across 3 separate kernel launches (QK^T, softmax, V mix), each with launch overhead and a `cudaDeviceSynchronize()` barrier. llama.cpp mitigates this with flash decoding and async execution via CUDA graphs/streams. Both are targets on the [Roadmap](#roadmap).
+The remaining gap to llama.cpp is primarily due to attention kernel structure: llm.cpp's attention is split across 3 separate kernel launches (QK^T, softmax, V mix), each with launch overhead and a `cudaDeviceSynchronize()` barrier. llama.cpp mitigates this with flash decoding and async execution via CUDA graphs/streams. Both are targets on the [Roadmap](#roadmap).
 
 ## Build
 
@@ -302,7 +303,6 @@ llm.cpp/
 
 - **Flash decoding** - fused single-pass attention kernel for autoregressive decoding to reduce per-token attention overhead and flatten throughput across context lengths
 - **Async kernel execution** - replace `cudaDeviceSynchronize()` with CUDA streams/graphs to overlap kernel execution and hide launch latency
-- **Quantized KV cache** - store K/V in FP16 or INT8 to reduce VRAM usage and enable longer context windows
 - **Paged attention** - memory-efficient attention for very long sequences without pre-allocating the full KV cache
 - **Batched inference** - process multiple sequences in parallel
 - **Multi-GPU support** - tensor parallelism across devices
