@@ -22,16 +22,15 @@ void GPUInference<T>::layer_forward(int layer_id, int pos) {
 
     // 2. qkv projection
     int kv_dim = (config->dim / config->n_heads) * config->n_kv_heads;
-    // this->matmul(runState->q, runState->xb, layer_weights.q_proj_weight->getData(), config->dim, config->dim);
-    // this->matmul(runState->k, runState->xb, layer_weights.k_proj_weight->getData(), config->dim, kv_dim);
-    // this->matmul(runState->v, runState->xb, layer_weights.v_proj_weight->getData(), config->dim, kv_dim);
     this->fused_qkv_matmuls(runState->q, runState->k, runState->v, runState->xb, layer_weights.q_proj_weight->getData(), layer_weights.k_proj_weight->getData(), layer_weights.v_proj_weight->getData(), config->dim, kv_dim);
 
-    // 3. rotary embedding
-    this->RoPE(pos);
+    // // 3. rotary embedding
+    // this->RoPE(pos);
+    //
+    // // 4. cache update
+    // this->UpdateKVCache(layer_id, pos);
 
-    // 4. cache update
-    this->UpdateKVCache(layer_id, pos);
+    this->RopeUpdateKVCache(layer_id, pos);
 
     // 5. attention score calculation
     int kv_mul = config->n_heads / config->n_kv_heads; // how many q heads per one kv head (group size in grouped attention)

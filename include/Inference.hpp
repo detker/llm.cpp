@@ -91,6 +91,17 @@ private:
     void layer_forward(int layer_id, int pos) override;
     void UpdateKVCache(int layer_id, int pos) override;
 
+    void RopeUpdateKVCache(int layer_id, int pos) {
+        int kv_dim = (config->dim / config->n_heads) * config->n_kv_heads;
+        if constexpr (std::same_as<T, float>) {
+            cu::fused_rope_kvcache_update_host_fp32(runState->q, runState->k, runState->v, layer_id, pos, config->rope_theta, config->dim, kv_dim, config->head_dim,
+                runState->key_cache + layer_id*config->max_seq_len*kv_dim + pos*kv_dim,
+                runState->value_cache + layer_id*config->max_seq_len*kv_dim + pos*kv_dim);
+        } else {
+            ERR("FP16 not implemented yet.");
+        }
+    }
+
     void RoPE(int pos) override {
         int kv_dim = (config->dim / config->n_heads) * config->n_kv_heads;
         if constexpr (std::same_as<T, float>) {

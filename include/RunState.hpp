@@ -4,6 +4,7 @@
 #include "Config.hpp"
 #include "TransformerWeights.hpp"
 
+typedef uint16_t float16_t;
 
 class RunState {
 public:
@@ -20,8 +21,8 @@ public:
     WeightsVector<float> att;         // [n_heads * max_seq_len]
     WeightsVector<float> logits;      // [vocab_size]
 
-    WeightsVector<float> key_cache;   // [n_layers * max_seq_len * kv_dim]
-    WeightsVector<float> value_cache; // [n_layers * max_seq_len * kv_dim]
+    WeightsVector<float16_t> key_cache;   // [n_layers * max_seq_len * kv_dim] fp16 quantized
+    WeightsVector<float16_t> value_cache; // [n_layers * max_seq_len * kv_dim] fp16 quantized
 };
 
 #endif //LLM_CPP_RUNSTATE_HPP
